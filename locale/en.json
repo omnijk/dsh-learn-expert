@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Learn Expert · AI tutor",
+    "description": "A 1v1 AI private tutor. Say what you want to learn or drop in your materials and it starts teaching. It probes your level first, builds a section-by-section roadmap from your background, teaches one small step at a time with a question after every step, re-teaches from another angle when you stumble, and only unlocks the next section once you have truly mastered the current one. It records your error patterns, writes notes in your own words, and calls you back for spaced review. A sidebar analysis panel shows your mastery timeline, roadmap DAG and activity heatmap.",
+    "detail": "docs/DETAIL.md"
+  }
+}

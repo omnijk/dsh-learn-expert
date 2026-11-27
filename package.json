@@ -1,0 +1,47 @@
+{
+  "name": "dsh-learn-expert",
+  "version": "1.0.0",
+  "description": "1v1 AI private tutor for DeepSeek Harness: diagnose first, teach section by section with Socratic questioning, gate progress on mastery, take notes in the learner's own words, and schedule spaced reviews. Ships a sidebar analysis panel with mastery timeline, roadmap DAG and activity heatmap.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omnijk/dsh-learn-expert.git"
+  },
+  "homepage": "https://github.com/omnijk/dsh-learn-expert",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "tutor",
+    "learning",
+    "spaced-repetition",
+    "socratic"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "src",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "NOTICE.md"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

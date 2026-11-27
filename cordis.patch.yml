@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-learn-expert
+      name: 'dsh-learn-expert'
+      config: {}
