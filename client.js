@@ -26,6 +26,47 @@ window.__ModuleLoader__.load({
       idle: 'var(--dsw-alias-state-idle-primary)',
     };
 
+    // ---- celebration confetti (CSS keyframes injected once) -----------------------
+    let confettiInjected = false;
+    function ensureConfettiStyle() {
+      if (confettiInjected || typeof document === 'undefined') return;
+      const el = document.createElement('style');
+      el.textContent = [
+        '@keyframes dsh-learn-confetti {',
+        '0% { transform: translateY(0) rotate(0deg); opacity: 1; }',
+        '100% { transform: translateY(var(--fall, 120px)) rotate(var(--spin, 360deg)); opacity: 0; }',
+        '}',
+      ].join('\n');
+      document.head.appendChild(el);
+      confettiInjected = true;
+    }
+    const CONFETTI_EMOJI = ['🎉', '🎊', '⭐', '✨', '🟡', '🔵', '🟢'];
+    function Confetti({ count = 14 }) {
+      ensureConfettiStyle();
+      const pieces = useMemo(() => Array.from({ length: count }, (_, i) => ({
+        left: `${(i * 97) % 100}%`,
+        delay: `${((i * 137) % 900) / 1000}s`,
+        dur: `${1.1 + ((i * 53) % 110) / 100}s`,
+        fall: `${70 + ((i * 71) % 130)}px`,
+        spin: `${(i % 2 ? -1 : 1) * (180 + ((i * 89) % 180))}deg`,
+        size: 10 + ((i * 31) % 12),
+        emoji: CONFETTI_EMOJI[i % CONFETTI_EMOJI.length],
+      })), [count]);
+      return h('span', {
+        style: {
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          pointerEvents: 'none', overflow: 'hidden', borderRadius: 'inherit',
+        },
+      }, pieces.map((p, i) => h('span', {
+        key: i,
+        style: {
+          position: 'absolute', top: -6, left: p.left, fontSize: p.size,
+          animation: `dsh-learn-confetti ${p.dur} ease-out ${p.delay} both`,
+          '--fall': p.fall, '--spin': p.spin,
+        },
+      }, p.emoji)));
+    }
+
     // ---- i18n (F6): dictionaries live here; the active language follows the
     // Client locale service when present, else the browser, else Chinese.
     const DICT = {
@@ -43,7 +84,7 @@ window.__ModuleLoader__.load({
         qualityPass: '复习通过率', qualityPassHint: '目标 ≥70%（SM-2 历史 {n} 次）',
         lineTitle: '掌握进度折线图',
         lineSubtitle: '每个学习计划一条线：已掌握节点数随时间的累计变化（阶梯线）。',
-        dagTitle: '路线图结构图', dagSubtitle: '概念节点按依赖分层；颜色 = 状态，悬停看四维分。',
+        dagTitle: '路线图结构图', dagSubtitle: '概念节点按教学顺序展开为思维导图；分支末端圆点颜色 = 状态，悬停看四维分。',
         heatTitle: '学习热力图', heatSubtitle: '最近 {n} 周：摸底、评分、检查点作答与复习的次数。',
         detailTitle: '学习计划明细',
         allPlans: '全部计划', allLearners: '全部学习者',
@@ -89,7 +130,19 @@ window.__ModuleLoader__.load({
         backToList: '返回课堂',
         courseEmptyTitle: '还没有课程', courseEmptyBody: '回到对话，对私教说「我想学 ……」开课。',
         courseLockedTip: '已锁定', favAdd: '收藏', favRemove: '取消收藏',
-        mapTitle: '知识导图',
+        mapTitle: '知识导图', mapTab: '全景导图',
+        // Home / review / celebration (v3.1)
+        tabToday: '今日', tabReview: '复盘',
+        greetMorning: '早上好', greetNoon: '中午好', greetAfternoon: '下午好', greetEvening: '晚上好',
+        homeIdea: '想弄懂点新东西？', homeIdeaPlaceholder: '比如：为什么利率上升，股市往往跌？',
+        homeIdeaGo: '去问私教',
+        homeContinue: '继续学习', homeBackToCourse: '回到课堂', homeAllCourses: '全部课程',
+        homeLastStudy: '上次学习：{d}', homeNone: '还没有进行中的课程',
+        feynmanTitle: '费曼复述', feynmanHint: '合上资料，用自己的话把这个知识点讲给"外行"听。讲不清楚的地方就是你的盲区。',
+        feynmanPlaceholder: '用自己的话讲一遍……', feynmanSaved: '已存入手记',
+        reviewDueLine: '{n} 个知识点到期', reviewNoneLine: '今天没有到期复习',
+        celebrateCourse: '这门课的知识点都掌握了，撒花！🎉', celebrateNode: '本节已掌握 🎉',
+        lockedTip: '前置章节掌握后解锁', nodeIndex: '第 {n} 节',
       },
       en: {
         title: 'Learning analysis', refresh: 'Refresh', export: 'Export data',
@@ -105,7 +158,7 @@ window.__ModuleLoader__.load({
         qualityPass: 'Review pass rate', qualityPassHint: 'target ≥70% ({n} SM-2 reviews)',
         lineTitle: 'Mastery timeline',
         lineSubtitle: 'One step line per plan: cumulative mastered nodes over time.',
-        dagTitle: 'Roadmap structure', dagSubtitle: 'Concept nodes layered by dependency; color = status, hover for scores.',
+        dagTitle: 'Roadmap structure', dagSubtitle: 'Concept nodes as a mind map in teaching order; end-dot color = status, hover for scores.',
         heatTitle: 'Activity heatmap', heatSubtitle: 'Last {n} weeks: diagnoses, assessments, checkpoint answers and reviews.',
         detailTitle: 'Plans',
         allPlans: 'All plans', allLearners: 'All learners',
@@ -149,7 +202,19 @@ window.__ModuleLoader__.load({
         backToList: 'Back to courses',
         courseEmptyTitle: 'No courses yet', courseEmptyBody: 'Go back to the chat and tell the tutor "I want to learn …".',
         courseLockedTip: 'Locked', favAdd: 'Favorite', favRemove: 'Unfavorite',
-        mapTitle: 'Concept map',
+        mapTitle: 'Concept map', mapTab: 'Mind map',
+        // Home / review / celebration (v3.1)
+        tabToday: 'Today', tabReview: 'Review',
+        greetMorning: 'Good morning', greetNoon: 'Good noon', greetAfternoon: 'Good afternoon', greetEvening: 'Good evening',
+        homeIdea: 'Want to understand something new?', homeIdeaPlaceholder: 'e.g. why do stocks fall when interest rates rise?',
+        homeIdeaGo: 'Ask the tutor',
+        homeContinue: 'Continue learning', homeBackToCourse: 'Back to classroom', homeAllCourses: 'All courses',
+        homeLastStudy: 'last study: {d}', homeNone: 'No course in progress',
+        feynmanTitle: 'Feynman retelling', feynmanHint: 'Close your notes and explain this concept to a layperson in your own words. Where you stumble is your blind spot.',
+        feynmanPlaceholder: 'Explain it in your own words…', feynmanSaved: 'Saved to notes',
+        reviewDueLine: '{n} concepts due', reviewNoneLine: 'Nothing due today',
+        celebrateCourse: 'All concepts of this course mastered — confetti! 🎉', celebrateNode: 'Section mastered 🎉',
+        lockedTip: 'Unlocks after prerequisites', nodeIndex: 'Section {n}',
       },
     };
     // depth/transfer/discrimination share keys with tool meta fields
@@ -334,74 +399,78 @@ window.__ModuleLoader__.load({
     };
 
     function DagChart({ plan, t }) {
+      // Colorful horizontal mind-map: course topic as root on the left, one
+      // branch per concept node in teaching order. Branch stroke cycles through
+      // PALETTE; the end dot carries the node status color. Rendered at natural
+      // size (never stretched), so font sizes stay constant.
+      const nodes = plan.nodes ?? [];
+      if (!nodes.length) return null;
       const [focus, setFocus] = useState(null);
-      const dag = plan.dag;
-      if (!dag || !dag.width) return null;
-      const NW = 156; const NH = 46; const GX = 56; const GY = 18;
-      const px = (ux) => ux * (NW + GX);
-      const py = (uy) => uy * (NH + GY);
-      const W = dag.width * (NW + GX) - GX + 8;
-      const H = dag.height * (NH + GY) - GY + 8;
+      const ROW = 66;
+      const ROOT_X = 18;
+      const LABEL_X = 210;
+      const PAD = 20;
+      const estW = (s, size) => Math.max(18, Math.round([...s].length * size * 0.92));
+      const H = PAD * 2 + nodes.length * ROW;
+      const rootY = H / 2;
+      const rootTitle = plan.topic.length > 12 ? `${plan.topic.slice(0, 11)}…` : plan.topic;
+      const rootW = estW(rootTitle, 13) + 26;
+      const dotX = (title) => LABEL_X + 14 + estW(title, 12) + 14;
+      const branches = nodes.map((n, i) => {
+        const title = n.title.length > 15 ? `${n.title.slice(0, 14)}…` : n.title;
+        const desc = String(n.description ?? '').replace(/[\r\n]+/g, ' ').trim();
+        return {
+          n, i, title,
+          desc: desc.length > 22 ? `${desc.slice(0, 21)}…` : desc,
+          y: PAD + i * ROW + ROW / 2,
+          color: STATUS_COLOR[n.status] ?? TOKEN.idle,
+          stroke: PALETTE[i % PALETTE.length],
+        };
+      });
+      const W = Math.max(...branches.map((b) => dotX(b.title)), LABEL_X + 60) + 24;
 
-      const chain = useMemo(() => {
-        if (!focus) return null;
-        const set = new Set([focus]);
-        let grew = true;
-        while (grew) {
-          grew = false;
-          for (const e of dag.edges) {
-            if (set.has(e.to) && !set.has(e.from)) { set.add(e.from); grew = true; }
-            if (set.has(e.from) && !set.has(e.to)) { set.add(e.to); grew = true; }
-          }
-        }
-        return set;
-      }, [focus, dag]);
-
-      const nodeById = Object.fromEntries(plan.nodes.map((n) => [n.id, n]));
+      const tip = (n) => `${n.title}\n${t(`status_${n.status}`) ?? n.status}` +
+        (n.mastery ? `\n${t('dimAccuracy')} ${n.mastery.accuracy ?? '—'} / ${t('dimDepth')} ${n.mastery.depth ?? '—'} / ${t('dimTransfer')} ${n.mastery.transfer ?? '—'} / ${t('dimDiscrimination')} ${n.mastery.discrimination ?? '—'} = ${n.mastery.total ?? '—'}` : '');
 
       return h('div', { style: { overflowX: 'auto' } },
-        h('svg', { viewBox: `0 0 ${W} ${H}`, style: { minWidth: Math.min(W, 720), width: '100%', height: 'auto', display: 'block' } },
-          dag.edges.map((e, i) => {
-            const a = dag.positions[e.from]; const b = dag.positions[e.to];
-            if (!a || !b) return null;
-            const x1 = px(a.x) + NW; const y1 = py(a.y) + NH / 2;
-            const x2 = px(b.x); const y2 = py(b.y) + NH / 2;
+        h('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: { display: 'block', maxWidth: 'none' } },
+          // branches
+          branches.map((b) => {
+            const x1 = ROOT_X + rootW;
+            const x2 = dotX(b.title);
             const mx = (x1 + x2) / 2;
-            const dim = chain && !(chain.has(e.from) && chain.has(e.to));
+            const dim = focus !== null && focus !== b.n.id;
             return h('path', {
-              key: i, d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
-              fill: 'none', stroke: TOKEN.border, strokeWidth: 1.4, opacity: dim ? 0.15 : 1,
+              key: `e${b.n.id}`,
+              d: `M ${x1} ${rootY} C ${mx} ${rootY}, ${mx} ${b.y}, ${x2} ${b.y}`,
+              fill: 'none', stroke: b.stroke, strokeWidth: 1.8,
+              opacity: dim ? 0.15 : 0.9,
             });
           }),
-          Object.entries(dag.positions).map(([id, pos]) => {
-            const node = nodeById[id] ?? { id, title: id, status: 'locked' };
-            const color = STATUS_COLOR[node.status] ?? TOKEN.idle;
-            const dim = chain && !chain.has(id);
-            const label = node.title.length > 12 ? `${node.title.slice(0, 11)}…` : node.title;
-            const m = node.mastery;
-            const tip = `${node.title}\n${t(`status_${node.status}`) ?? node.status}` +
-              (m ? `\n${t('dimAccuracy')} ${m.accuracy ?? '—'} / ${t('dimDepth')} ${m.depth ?? '—'} / ${t('dimTransfer')} ${m.transfer ?? '—'} / ${t('dimDiscrimination')} ${m.discrimination ?? '—'} = ${m.total ?? '—'}` : '');
+          // root node
+          h('g', null,
+            h('rect', {
+              x: ROOT_X, y: rootY - 19, width: rootW, height: 38, rx: 10,
+              fill: TOKEN.surface2, stroke: TOKEN.brand, strokeWidth: 1.6,
+            }),
+            h('circle', { cx: ROOT_X + rootW, cy: rootY, r: 4.5, fill: TOKEN.surface, stroke: TOKEN.brand, strokeWidth: 1.6 }),
+            h('text', { x: ROOT_X + 13, y: rootY + 4.5, fontSize: 13, fontWeight: 600, fill: TOKEN.text }, rootTitle),
+          ),
+          // branch nodes
+          branches.map((b) => {
+            const dim = focus !== null && focus !== b.n.id;
             return h('g', {
-              key: id,
+              key: b.n.id,
               opacity: dim ? 0.2 : 1,
-              onMouseEnter: () => setFocus(id),
+              onMouseEnter: () => setFocus(b.n.id),
               onMouseLeave: () => setFocus(null),
               style: { cursor: 'default', transition: 'opacity .15s' },
             },
-              h('title', null, tip),
-              h('rect', {
-                x: px(pos.x) + 4, y: py(pos.y), width: NW, height: NH, rx: 9,
-                fill: TOKEN.surface2, stroke: color, strokeWidth: node.status === 'active' ? 2.2 : 1.4,
-              }),
-              h('circle', { cx: px(pos.x) + 16, cy: py(pos.y) + NH / 2, r: 4, fill: color }),
-              h('text', {
-                x: px(pos.x) + 26, y: py(pos.y) + (m ? NH / 2 - 2 : NH / 2 + 4),
-                fontSize: 12, fill: TOKEN.text,
-              }, label),
-              m ? h('text', {
-                x: px(pos.x) + 26, y: py(pos.y) + NH / 2 + 13,
-                fontSize: 10, fill: TOKEN.text2,
-              }, `${t('avgScore', { n: m.total ?? '—' })}`) : null,
+              h('title', null, tip(b.n)),
+              h('circle', { cx: LABEL_X, cy: b.y, r: 5, fill: TOKEN.surface, stroke: b.color, strokeWidth: 1.8 }),
+              h('text', { x: LABEL_X + 14, y: b.y + 4, fontSize: 12, fill: TOKEN.text }, b.title),
+              b.desc ? h('text', { x: LABEL_X + 14, y: b.y + 19, fontSize: 10, fill: TOKEN.text2 }, b.desc) : null,
+              h('circle', { cx: dotX(b.title), cy: b.y, r: 5.5, fill: b.color }),
             );
           }),
         ),
@@ -751,10 +820,9 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function NodeRow({ course, node, t, onSaved }) {
+    function NodeRow({ course, node, index, t, onSaved }) {
       const [pane, setPane] = useState(null); // null | 'note' | 'map' | 'scratch'
       const toggle = (kind) => setPane(pane === kind ? null : kind);
-      const color = STATUS_COLOR[node.status] ?? TOKEN.idle;
       const pill = (kind, label, marked) => h('button', {
         onClick: () => toggle(kind),
         style: {
@@ -764,30 +832,62 @@ window.__ModuleLoader__.load({
           color: TOKEN.text2,
         },
       }, `${label}${marked ? ' ·' : ''}`);
+      // Status badge: mastered = solid green circle with white ✓; active = numbered
+      // circle (1-based section index); needs-relearn = warn '!'; locked = gray lock.
+      const badge = node.status === 'mastered'
+        ? h('span', {
+            style: {
+              width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: 'inline-flex',
+              alignItems: 'center', justifyContent: 'center', fontSize: 14, color: '#fff',
+              background: TOKEN.success, boxShadow: '0 1px 4px rgba(0,0,0,.15)',
+            },
+          }, '✓')
+        : node.status === 'active'
+          ? h('span', {
+              style: {
+                width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: 'inline-flex',
+                alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 600,
+                color: TOKEN.brand, border: `2px solid ${TOKEN.brand}`, background: TOKEN.surface,
+              },
+            }, index + 1)
+          : node.status === 'needs-relearn'
+            ? h('span', {
+                style: {
+                  width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: 'inline-flex',
+                  alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 600,
+                  color: '#fff', background: TOKEN.warn,
+                },
+              }, '!')
+            : h('span', {
+                title: t('lockedTip'),
+                style: {
+                  width: 26, height: 26, borderRadius: 13, flexShrink: 0, display: 'inline-flex',
+                  alignItems: 'center', justifyContent: 'center', fontSize: 12,
+                  color: TOKEN.idle, border: `1px solid ${TOKEN.border}`, background: TOKEN.surface2,
+                },
+              }, '🔒');
       return h('div', {
         style: {
-          background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 10,
-          padding: '10px 14px',
+          background: TOKEN.surface, border: `1px solid ${node.status === 'active' ? TOKEN.brand : TOKEN.border}`,
+          borderRadius: 10, padding: '10px 14px',
         },
       },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+          badge,
           h('span', {
             style: {
-              width: 18, height: 18, borderRadius: 9, flexShrink: 0, display: 'inline-flex',
-              alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff',
-              background: node.status === 'mastered' ? TOKEN.success
-                : node.status === 'active' ? TOKEN.brand
-                : node.status === 'needs-relearn' ? TOKEN.warn : TOKEN.surface2,
-              border: `1px solid ${color}`,
+              flex: 1, minWidth: 120, fontSize: 13, fontWeight: node.status === 'locked' ? 400 : 500,
+              color: node.status === 'locked' ? TOKEN.text2 : TOKEN.text,
             },
-          }, node.status === 'mastered' ? '✓' : node.status === 'needs-relearn' ? '!' : ''),
-          h('span', { style: { flex: 1, minWidth: 120, fontSize: 13, fontWeight: 500 } }, node.title),
+          }, node.title),
           node.total != null ? h('span', { style: { fontSize: 11, color: TOKEN.text2 } }, t('avgScore', { n: node.total })) : null,
-          h('span', { style: { display: 'inline-flex', gap: 6 } },
-            pill('note', t('nodeNote'), node.hasNote),
-            pill('map', t('nodeMap')),
-            pill('scratch', t('nodeScratch'), node.hasUserNote),
-          ),
+          node.status === 'locked'
+            ? null
+            : h('span', { style: { display: 'inline-flex', gap: 6 } },
+                pill('note', t('nodeNote'), node.hasNote),
+                pill('map', t('nodeMap')),
+                pill('scratch', t('nodeScratch'), node.hasUserNote),
+              ),
         ),
         pane ? h(NodePane, { course, node, kind: pane, t, onSaved }) : null,
       );
@@ -806,7 +906,7 @@ window.__ModuleLoader__.load({
             },
           }, `← ${t('backToList')}`),
           h('div', { style: { display: 'inline-flex', gap: 4, background: TOKEN.surface2, borderRadius: 999, padding: 3 } },
-            [['journey', t('journey')], ['review', t('reviewTab')]].map(([id, label]) => h('button', {
+            [['journey', t('journey')], ['map', t('mapTab')], ['review', t('reviewTab')]].map(([id, label]) => h('button', {
               key: id, onClick: () => setTab(id),
               style: {
                 cursor: 'pointer', fontSize: 12, padding: '4px 16px', borderRadius: 999, border: 'none',
@@ -823,12 +923,26 @@ window.__ModuleLoader__.load({
           done ? ` · ${t('state_COMPLETED')} 🎉` : '',
         ),
         h(SegmentedProgress, { nodes: course.nodes }),
+        done
+          ? h('div', {
+              style: {
+                position: 'relative', overflow: 'hidden', borderRadius: 10, marginTop: 12,
+                padding: '12px 16px', fontSize: 14, fontWeight: 600,
+                background: 'linear-gradient(120deg, #3FB27F22, #4C7DF022)',
+                border: `1px solid ${TOKEN.success}`, color: TOKEN.text,
+              },
+            }, h(Confetti, { count: 18 }), t('celebrateCourse'))
+          : null,
         tab === 'journey'
           ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 } },
-              course.nodes.map((n) => h(NodeRow, {
-                key: n.id, course, node: n, t, onSaved: reload,
+              course.nodes.map((n, i) => h(NodeRow, {
+                key: n.id, course, node: n, index: i, t, onSaved: reload,
               })),
             )
+          : tab === 'map'
+            ? h('div', { style: { marginTop: 16 } },
+                h(Card, { style: { overflowX: 'auto' } }, h(DagChart, { plan: course, t })),
+              )
           : h('div', { style: { marginTop: 16 } },
               (() => {
                 const due = course.reviews.filter((r) => r.due);
@@ -870,12 +984,26 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** Jump back to the chat bound to a course; falls back to the current chat. */
+    function jumpToSession(navCtx, course) {
+      const sid = course?.meta?.sessionId;
+      let jumped = false;
+      if (sid) {
+        try {
+          const uiWorkspace = navCtx?.get?.('uiWorkspace');
+          if (uiWorkspace?.openSession) { uiWorkspace.openSession(sid); jumped = true; }
+        } catch { /* session may be gone */ }
+      }
+      if (!jumped) {
+        try { navCtx?.get?.('layout')?.selectPanel?.(null); } catch { /* optional */ }
+      }
+    }
+
     /** 课堂 root: course list ↔ course detail. */
-    function CoursesPanel({ i18n, navCtx, onReload }) {
+    function CoursesPanel({ i18n, navCtx, onReload, openKey, setOpenKey }) {
       const t = useT(i18n);
       const [data, setData] = useState(null);
       const [error, setError] = useState(null);
-      const [openKey, setOpenKey] = useState(null);
       const load = () => {
         setError(null);
         api('courses').then(setData, (e) => setError(String(e?.message ?? e)));
@@ -915,19 +1043,7 @@ window.__ModuleLoader__.load({
           body: JSON.stringify({ root: course.root, learnerId: course.learnerId, roadmapId: course.roadmapId }),
         }).then(() => { setOpenKey(null); load(); onReload?.(); }).catch(() => {});
       };
-      const ask = (course) => {
-        const sid = course.meta.sessionId;
-        let jumped = false;
-        if (sid) {
-          try {
-            const uiWorkspace = navCtx?.get?.('uiWorkspace');
-            if (uiWorkspace?.openSession) { uiWorkspace.openSession(sid); jumped = true; }
-          } catch { /* session may be gone */ }
-        }
-        if (!jumped) {
-          try { navCtx?.get?.('layout')?.selectPanel?.(null); } catch { /* optional */ }
-        }
-      };
+      const ask = (course) => jumpToSession(navCtx, course);
 
       if (error) return h('div', { style: { marginTop: 20, color: TOKEN.error } }, `${t('loadFailed')}: ${error}`);
       if (!data) return h('div', { style: { marginTop: 20, color: TOKEN.text2 } }, t('loading'));
@@ -936,11 +1052,248 @@ window.__ModuleLoader__.load({
         : h(CourseListView, { courses, t, onOpen: (c) => setOpenKey(c.key), onMutate: mutate, onDelete: remove, onAsk: ask });
     }
 
-    /** Plugin main panel: 课堂 + 分析 tabs. */
+    /** 今日 home: greeting + "learn something new" entry + continue-learning card. */
+    function HomePanel({ i18n, navCtx, onOpenCourse, onGoCourses }) {
+      const t = useT(i18n);
+      const [data, setData] = useState(null);
+      const [idea, setIdea] = useState('');
+      useEffect(() => {
+        let alive = true;
+        api('courses').then((d) => { if (alive) setData(d); }).catch(() => { if (alive) setData({ courses: [] }); });
+        return () => { alive = false; };
+      }, []);
+      const courses = data?.courses ?? [];
+      // courses arrive sorted by updatedAt desc — first unfinished course is "current".
+      const current = courses.find((c) => c.nodeCount > 0 && c.masteredCount < c.nodeCount) ?? null;
+      const activeNode = current?.activeNode ?? null;
+      const activeIdx = current && activeNode ? current.nodes.indexOf(activeNode) : -1;
+      const now = new Date();
+      const hr = now.getHours();
+      const greet = hr < 11 ? t('greetMorning') : hr < 14 ? t('greetNoon') : hr < 18 ? t('greetAfternoon') : t('greetEvening');
+      const dateLine = new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', weekday: 'short' }).format(now);
+      const goChat = () => jumpToSession(navCtx, null);
+
+      return h('div', { style: { marginTop: 4 } },
+        h('div', { style: { fontSize: 12, color: TOKEN.text2 } }, dateLine),
+        h('h1', { style: { fontSize: 28, fontWeight: 650, margin: '6px 0 18px' } }, greet),
+        // "想弄懂点新东西？" input card
+        h('div', {
+          style: {
+            background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 14,
+            padding: '16px 18px', maxWidth: 720,
+          },
+        },
+          h('div', { style: { fontSize: 15, fontWeight: 600, marginBottom: 10 } }, t('homeIdea')),
+          h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+            h('input', {
+              value: idea, placeholder: t('homeIdeaPlaceholder'),
+              onChange: (e) => setIdea(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') goChat(); },
+              style: {
+                flex: 1, fontSize: 13, padding: '8px 12px', borderRadius: 999,
+                border: `1px solid ${TOKEN.border}`, background: TOKEN.surface2, color: TOKEN.text,
+                outline: 'none', fontFamily: 'inherit',
+              },
+            }),
+            h('button', {
+              onClick: goChat, title: t('homeIdeaGo'),
+              style: {
+                cursor: 'pointer', width: 34, height: 34, borderRadius: 17, border: 'none',
+                background: TOKEN.brand, color: '#fff', fontSize: 16, flexShrink: 0,
+              },
+            }, '➤'),
+          ),
+        ),
+        // continue-learning card
+        current ? h('div', {
+          style: {
+            background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 14,
+            padding: '18px 20px', maxWidth: 720, marginTop: 16, position: 'relative', overflow: 'hidden',
+          },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 } },
+            h('span', { style: { fontSize: 13, color: TOKEN.text2 } }, `${t('homeContinue')} · ${current.meta.alias ?? current.topic}`),
+            h('button', {
+              onClick: onGoCourses,
+              style: {
+                cursor: 'pointer', fontSize: 12, padding: '4px 12px', borderRadius: 999,
+                border: `1px solid ${TOKEN.border}`, background: 'transparent', color: TOKEN.text2,
+              },
+            }, `${t('homeAllCourses')} ↗`),
+          ),
+          activeNode ? h('h2', {
+            style: { fontSize: 24, fontWeight: 650, margin: '14px 0 8px', lineHeight: 1.25 },
+          },
+            h('span', { style: { color: '#C98A4B', fontStyle: 'italic', marginRight: 10 } }, String(activeIdx + 1).padStart(2, '0')),
+            activeNode.title,
+          ) : null,
+          activeNode?.description ? h('div', {
+            style: {
+              fontSize: 13, color: TOKEN.text2, marginBottom: 14,
+              borderLeft: `3px solid ${TOKEN.brand}`, paddingLeft: 10,
+            },
+          }, activeNode.description) : null,
+          h(SegmentedProgress, { nodes: current.nodes }),
+          h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 12, flexWrap: 'wrap' } },
+            h('span', { style: { fontSize: 12, color: TOKEN.text2 } },
+              `${t('masteredLine', { m: current.masteredCount, n: current.nodeCount })} · ${t('homeLastStudy', { d: fmtDate(current.updatedAt) })}`),
+            h('button', {
+              onClick: () => onOpenCourse(current.key),
+              style: {
+                cursor: 'pointer', fontSize: 13, padding: '8px 22px', borderRadius: 10, border: 'none',
+                background: 'linear-gradient(135deg, #4C7DF0, #8E6BD8)', color: '#fff', fontWeight: 600,
+                boxShadow: '0 2px 8px rgba(76,125,240,.35)',
+              },
+            }, `${t('homeBackToCourse')} ›`),
+          ),
+        )
+          : data ? h('div', {
+              style: {
+                marginTop: 16, padding: 20, borderRadius: 12, textAlign: 'center',
+                border: `1px dashed ${TOKEN.border}`, color: TOKEN.text2, maxWidth: 720,
+              },
+            }, t('homeNone')) : null,
+      );
+    }
+
+    /** Feynman retelling textarea for one review item; saved as the node's user note. */
+    function FeynmanNote({ course, item, t }) {
+      const [open, setOpen] = useState(false);
+      const [draft, setDraft] = useState(null);
+      const [status, setStatus] = useState(null);
+      useEffect(() => {
+        if (!open || draft !== null) return;
+        const qs = `root=${encodeURIComponent(course.root)}&learnerId=${encodeURIComponent(course.learnerId)}`
+          + `&roadmapId=${encodeURIComponent(course.roadmapId)}&nodeId=${encodeURIComponent(item.nodeId)}&kind=user`;
+        api(`course/note?${qs}`).then((d) => setDraft(d.content ?? '')).catch(() => setDraft(''));
+      }, [open]);
+      const save = () => {
+        setStatus(null);
+        api('course/note', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            root: course.root, learnerId: course.learnerId, roadmapId: course.roadmapId,
+            nodeId: item.nodeId, content: draft ?? '',
+          }),
+        }).then(() => setStatus('ok')).catch(() => setStatus('fail'));
+      };
+      return h('div', { style: { marginTop: open ? 8 : 0 } },
+        h('button', {
+          onClick: () => setOpen(!open),
+          style: {
+            cursor: 'pointer', fontSize: 12, padding: '3px 12px', borderRadius: 999,
+            border: `1px solid ${open ? '#8E6BD8' : TOKEN.border}`,
+            background: open ? '#8E6BD81A' : 'transparent', color: open ? '#8E6BD8' : TOKEN.text2,
+          },
+        }, `🗣 ${t('feynmanTitle')}`),
+        open ? h('div', { style: { marginTop: 8 } },
+          h('div', { style: { fontSize: 11, color: TOKEN.text2, marginBottom: 6 } }, t('feynmanHint')),
+          h('textarea', {
+            value: draft ?? '', rows: 3, placeholder: t('feynmanPlaceholder'),
+            onChange: (e) => setDraft(e.target.value),
+            style: {
+              width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, borderRadius: 6,
+              border: '1px solid #8E6BD866', background: TOKEN.surface, color: TOKEN.text,
+              fontFamily: 'inherit', resize: 'vertical',
+            },
+          }),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 } },
+            h('button', {
+              onClick: save,
+              style: {
+                cursor: 'pointer', fontSize: 12, padding: '4px 14px', borderRadius: 6,
+                border: '1px solid #8E6BD8', background: '#8E6BD8', color: '#fff',
+              },
+            }, t('scratchSave')),
+            status === 'ok' ? h('span', { style: { color: TOKEN.success, fontSize: 12 } }, t('feynmanSaved')) : null,
+            status === 'fail' ? h('span', { style: { color: TOKEN.error, fontSize: 12 } }, t('scratchFailed')) : null,
+          ),
+        ) : null,
+      );
+    }
+
+    /** 复盘 panel: SM-2 due items across all courses + Feynman retelling. */
+    function ReviewPanel({ i18n, navCtx, onOpenCourse }) {
+      const t = useT(i18n);
+      const [data, setData] = useState(null);
+      const [error, setError] = useState(null);
+      const load = () => {
+        setError(null);
+        api('courses').then(setData, (e) => setError(String(e?.message ?? e)));
+      };
+      useEffect(() => {
+        load();
+        const iv = setInterval(load, 60000);
+        const onVis = () => { if (document.visibilityState === 'visible') load(); };
+        document.addEventListener('visibilitychange', onVis);
+        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+      }, []);
+      const courses = data?.courses ?? [];
+      const dueItems = [];
+      const upcoming = [];
+      for (const c of courses) {
+        for (const r of c.reviews) {
+          if (r.due) dueItems.push({ course: c, item: r });
+          else upcoming.push({ course: c, item: r });
+        }
+      }
+      upcoming.sort((a, b) => a.item.nextReviewAt - b.item.nextReviewAt);
+
+      if (error) return h('div', { style: { marginTop: 20, color: TOKEN.error } }, `${t('loadFailed')}: ${error}`);
+      if (!data) return h('div', { style: { marginTop: 20, color: TOKEN.text2 } }, t('loading'));
+
+      return h('div', { style: { marginTop: 16 } },
+        h('div', {
+          style: {
+            fontSize: 13, marginBottom: 12, fontWeight: 600,
+            color: dueItems.length ? TOKEN.warn : TOKEN.success,
+          },
+        }, dueItems.length ? t('reviewDueLine', { n: dueItems.length }) : `✓ ${t('reviewNoneLine')}`),
+        dueItems.map(({ course, item }) => h('div', {
+          key: `${course.key}:${item.nodeId}`,
+          style: {
+            background: TOKEN.surface, border: `1px solid ${TOKEN.border}`,
+            borderLeft: `3px solid ${TOKEN.warn}`, borderRadius: 10, padding: '12px 16px',
+            marginBottom: 8, maxWidth: 720,
+          },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+            h('span', { style: { flex: 1, minWidth: 140, fontSize: 13, fontWeight: 500 } }, `📅 ${item.title}`),
+            h('span', {
+              style: { fontSize: 11, color: TOKEN.text2, cursor: 'pointer' },
+              onClick: () => onOpenCourse(course.key),
+              title: course.topic,
+            }, course.meta.alias ?? course.topic),
+            h('button', {
+              onClick: () => jumpToSession(navCtx, course),
+              style: {
+                cursor: 'pointer', fontSize: 12, padding: '3px 12px', borderRadius: 999,
+                border: `1px solid ${TOKEN.brand}`, background: 'transparent', color: TOKEN.brand,
+              },
+            }, t('goReview')),
+          ),
+          h(FeynmanNote, { course, item, t }),
+        )),
+        dueItems.length === 0 ? h('div', {
+          style: {
+            padding: 24, borderRadius: 12, textAlign: 'center', color: TOKEN.text2,
+            border: `1px dashed ${TOKEN.border}`, maxWidth: 720,
+          },
+        }, t('reviewAllEmpty')) : null,
+        upcoming.length ? h('div', { style: { marginTop: 16, fontSize: 12, color: TOKEN.text2, maxWidth: 720 } },
+          upcoming.slice(0, 8).map(({ course, item }) => h('div', { key: `${course.key}:${item.nodeId}`, style: { marginTop: 4 } },
+            `· ${item.title}（${course.meta.alias ?? course.topic}）— ${t('reviewNext', { d: fmtDate(item.nextReviewAt) })}`)),
+        ) : null,
+      );
+    }
+
+    /** Plugin main panel: 今日 + 课堂 + 复盘 + 分析 tabs. */
     function LearnPanel({ i18n, navCtx }) {
       const t = useT(i18n);
-      const [tab, setTab] = useState('courses');
+      const [tab, setTab] = useState('today');
+      const [openKey, setOpenKey] = useState(null);
       const [analysisTick, setAnalysisTick] = useState(0);
+      const openCourse = (key) => { setOpenKey(key); setTab('courses'); };
       return h('div', {
         style: {
           height: '100%', overflowY: 'auto', boxSizing: 'border-box',
@@ -951,10 +1304,10 @@ window.__ModuleLoader__.load({
         h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 } },
           h('h1', { style: { fontSize: 18, fontWeight: 650, margin: 0 } }, t('panelTitle')),
           h('div', { style: { display: 'inline-flex', gap: 4, background: TOKEN.surface2, borderRadius: 999, padding: 3 } },
-            [['courses', t('tabCourses')], ['analysis', t('tabAnalysis')]].map(([id, label]) => h('button', {
+            [['today', t('tabToday')], ['courses', t('tabCourses')], ['review', t('tabReview')], ['analysis', t('tabAnalysis')]].map(([id, label]) => h('button', {
               key: id, onClick: () => setTab(id),
               style: {
-                cursor: 'pointer', fontSize: 12, padding: '4px 18px', borderRadius: 999, border: 'none',
+                cursor: 'pointer', fontSize: 12, padding: '4px 16px', borderRadius: 999, border: 'none',
                 background: tab === id ? TOKEN.surface : 'transparent',
                 color: tab === id ? TOKEN.text : TOKEN.text2, fontWeight: tab === id ? 600 : 400,
                 boxShadow: tab === id ? '0 1px 3px rgba(0,0,0,.12)' : 'none',
@@ -962,9 +1315,13 @@ window.__ModuleLoader__.load({
             }, label)),
           ),
         ),
-        tab === 'courses'
-          ? h(CoursesPanel, { i18n, navCtx, onReload: () => setAnalysisTick((n) => n + 1) })
-          : h(AnalysisPanel, { i18n, key: analysisTick, embedded: true }),
+        tab === 'today'
+          ? h(HomePanel, { i18n, navCtx, onOpenCourse: openCourse, onGoCourses: () => { setOpenKey(null); setTab('courses'); } })
+          : tab === 'courses'
+            ? h(CoursesPanel, { i18n, navCtx, onReload: () => setAnalysisTick((n) => n + 1), openKey, setOpenKey })
+            : tab === 'review'
+              ? h(ReviewPanel, { i18n, navCtx, onOpenCourse: openCourse })
+              : h(AnalysisPanel, { i18n, key: analysisTick, embedded: true }),
       );
     }
 
@@ -1077,41 +1434,41 @@ window.__ModuleLoader__.load({
 
         data && allPlans.length > 0 ? h(React.Fragment, null,
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 18 } },
-            h(StatCard, { label: t('statPlans'), value: String(allPlans.length), hint: t('statPlansHint') }),
+            h(StatCard, { label: t('statPlans'), value: String(allPlans.length), hint: t('statPlansHint'), color: PALETTE[0] }),
             h(StatCard, {
               label: t('statMastered'),
               value: `${allPlans.reduce((s, p) => s + p.masteredCount, 0)}/${allPlans.reduce((s, p) => s + p.nodeCount, 0)}`,
-              hint: t('statMasteredHint'),
+              hint: t('statMasteredHint'), color: PALETTE[2],
             }),
-            h(StatCard, { label: t('statAvg'), value: avgAll != null ? String(avgAll) : '—', hint: t('statAvgHint') }),
+            h(StatCard, { label: t('statAvg'), value: avgAll != null ? String(avgAll) : '—', hint: t('statAvgHint'), color: PALETTE[4] }),
             h(StatCard, {
               label: t('statReview'), value: String(data.review.due),
               hint: t('statReviewHint', { n: data.review.total }),
-              color: data.review.due > 0 ? TOKEN.warn : undefined,
+              color: data.review.due > 0 ? TOKEN.warn : TOKEN.success,
             }),
           ),
 
           data.quality && (data.quality.avgAttemptsPerNode != null || data.quality.reviewPassRate != null)
             ? h(React.Fragment, null,
-                h(SectionTitle, null, t('qualityTitle')),
+                h(SectionTitle, null, `🧪 ${t('qualityTitle')}`),
                 h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 12 } },
                   h(StatCard, {
                     label: t('qualityDensity'),
                     value: data.quality.avgAttemptsPerNode != null ? String(data.quality.avgAttemptsPerNode) : '—',
                     hint: t('qualityDensityHint'),
-                    color: data.quality.avgAttemptsPerNode != null && data.quality.avgAttemptsPerNode < 2 ? TOKEN.warn : undefined,
+                    color: data.quality.avgAttemptsPerNode != null && data.quality.avgAttemptsPerNode < 2 ? TOKEN.warn : PALETTE[5],
                   }),
                   h(StatCard, {
                     label: t('qualityPass'),
                     value: data.quality.reviewPassRate != null ? `${data.quality.reviewPassRate}%` : '—',
                     hint: t('qualityPassHint', { n: data.quality.reviewedCount }),
-                    color: data.quality.reviewPassRate != null && data.quality.reviewPassRate < 70 ? TOKEN.warn : undefined,
+                    color: data.quality.reviewPassRate != null && data.quality.reviewPassRate < 70 ? TOKEN.warn : PALETTE[2],
                   }),
                 ),
               )
             : null,
 
-          h(SectionTitle, { sub: t('lineSubtitle') }, t('lineTitle')),
+          h(SectionTitle, { sub: t('lineSubtitle') }, `📈 ${t('lineTitle')}`),
           h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, margin: '10px 0 14px' } },
             h(Chip, { active: !selected, onClick: () => setSelected(null) }, t('allPlans')),
             allPlans.map((p) => h(Chip, {
@@ -1123,14 +1480,14 @@ window.__ModuleLoader__.load({
           h(Card, null, h(LineChart, { plans, selected })),
 
           dagPlan ? h(React.Fragment, null,
-            h(SectionTitle, { sub: t('dagSubtitle') }, `${t('dagTitle')} — ${dagPlan.topic}`),
+            h(SectionTitle, { sub: t('dagSubtitle') }, `🗺️ ${t('dagTitle')} — ${dagPlan.topic}`),
             h(Card, null, h(DagChart, { plan: dagPlan, t })),
           ) : null,
 
-          h(SectionTitle, { sub: t('heatSubtitle', { n: Math.round(data.heatmap.length / 7) }) }, t('heatTitle')),
+          h(SectionTitle, { sub: t('heatSubtitle', { n: Math.round(data.heatmap.length / 7) }) }, `🔥 ${t('heatTitle')}`),
           h(Card, { style: { overflowX: 'auto' } }, h(Heatmap, { days: data.heatmap, t })),
 
-          h(SectionTitle, null, t('detailTitle')),
+          h(SectionTitle, null, `📚 ${t('detailTitle')}`),
           h(PlanRows, { plans, allPlans, t }),
         ) : null,
       );
@@ -1283,12 +1640,37 @@ window.__ModuleLoader__.load({
       const m = meta.mastery;
       const tone = meta.action === 'unlock' ? TOKEN.success : meta.action === 'remediate' ? TOKEN.error : TOKEN.warn;
       const actionText = meta.action === 'unlock' ? t('cardUnlock') : meta.action === 'remediate' ? t('cardRemediate') : t('cardQuestion');
+      const celebrate = meta.action === 'unlock';
+      // A node just unlocked: gradient celebration card with confetti burst.
+      if (celebrate) {
+        return h('div', {
+          style: {
+            position: 'relative', overflow: 'hidden', maxWidth: 640, fontSize: 12, color: TOKEN.text,
+            padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${TOKEN.success}`,
+            background: 'linear-gradient(120deg, rgba(63,178,127,.16), rgba(76,125,240,.14))',
+          },
+        },
+          h(Confetti, { count: meta.courseCompleted ? 22 : 12 }),
+          h('div', { style: { display: 'flex', gap: 10, alignItems: 'flex-start' } },
+            h('span', { style: { fontSize: 14, lineHeight: '18px' } }, '🎉'),
+            h('div', { style: { flex: 1, minWidth: 0 } },
+              h('div', { style: { fontWeight: 600, marginBottom: 6 } },
+                `${t('celebrateNode')} · ${t('cardMastery')}：${m.total}（${t('cardThreshold', { n: meta.threshold })}）· ${actionText}`),
+              h(DimBar, { label: t('dimAccuracy'), value: m.accuracy }),
+              h(DimBar, { label: t('dimDepth'), value: m.depth }),
+              h(DimBar, { label: t('dimTransfer'), value: m.transfer }),
+              h(DimBar, { label: t('dimDiscrimination'), value: m.discrimination }),
+              meta.courseCompleted ? h('div', { style: { marginTop: 6, color: TOKEN.success, fontWeight: 600 } }, t('cardCourseDone')) : null,
+            ),
+          ),
+        );
+      }
       return h(ToolCardShell, { icon: '📊', title: `${t('cardMastery')}：${m.total}（${t('cardThreshold', { n: meta.threshold })}）· ${actionText}`, tone },
         h(DimBar, { label: t('dimAccuracy'), value: m.accuracy }),
         h(DimBar, { label: t('dimDepth'), value: m.depth }),
         h(DimBar, { label: t('dimTransfer'), value: m.transfer }),
         h(DimBar, { label: t('dimDiscrimination'), value: m.discrimination }),
-        meta.courseCompleted ? h('div', { style: { marginTop: 6, color: TOKEN.success, fontWeight: 600 } }, t('cardCourseDone')) : null,
       );
     }
 
