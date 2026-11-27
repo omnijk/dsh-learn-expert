@@ -11,11 +11,12 @@ import { assertSafeId, isLearnRoot, normalizeRoot, safeJoin } from './src/store/
 import { ProfileStore } from './src/store/profile-store.js';
 import { ReviewQueue } from './src/store/review-queue.js';
 import { createLearnTools } from './src/tools/learn-tools.js';
+import { createTutorGate } from './src/tools/activation.js';
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
 const skillDir = join(packageDir, 'src', 'skills', 'tutor');
 
-export const inject = ['tools'];
+export const inject = ['tools', 'sessions'];
 
 const REMINDER_INTERVAL_MS = 15 * 60 * 1000;
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -269,7 +270,19 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => {
-    const disposers = tools.map((tool) => ctx.tools.register(withSessionBinding(tool)));
+    // The toolset only exists for a session that asked for a tutor (see
+    // src/tools/activation.js). A session that never mentions learning keeps
+    // the ~14 tool schemas out of its context entirely.
+    const gate = createTutorGate();
+    const when = (context) => gate.isActive(context?.agent);
+    const disposers = tools.map((tool) => ctx.tools.register(withSessionBinding(tool), { when }));
+
+    // Live turns: watch committed events so a later "我想学…" switches the
+    // session on without re-reading history. Resumed sessions publish no events
+    // for their seeded prefix, which the gate covers by seeding from messages.
+    try {
+      disposers.push(ctx.on('session/event', (session, event) => gate.observe(session, event)));
+    } catch { /* event bus unavailable: seeding still activates */ }
 
     // ---- Web API for the analysis panel / profile card (F3, F4, F5, F9) ----
     // The webServer service can be installed AFTER this plugin is applied on a
@@ -584,7 +597,7 @@ export function apply(ctx, config = {}) {
           description:
             '1v1 AI 私教：说出想学什么或丢进资料就开讲。摸底诊断 → 按背景生成章节路线图 → 逐节教学（讲一段出一题）→ 四维掌握度 ≥80 解锁 → 笔记沉淀 → SM-2 间隔复习。当用户想真正学会一个主题时使用。',
           whenToUse:
-            'Use when the user wants to learn or be taught a topic (e.g. "我想学…", "teach me …", "带我学会…"), when starting or continuing a course, or when spaced-review items come due.',
+            'Use ONLY when the user explicitly asks to learn, be taught, or review a topic (e.g. "我想学…", "教我…", "带我学会…", "复习一下…", "teach me …"), or when a spaced-review reminder arrives. Do not load this skill for ordinary questions about a topic.',
           content: readFileSync(join(skillDir, 'SKILL.md'), 'utf8'),
           source: 'bundled',
           resourceBase: { kind: 'directory', path: skillDir },
