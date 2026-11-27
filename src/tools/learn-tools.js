@@ -371,15 +371,8 @@ export function createLearnTools({ registry, masteryThreshold }) {
       });
       let relearn = false;
       if (args.quality < 3) {
-        const roadmap = await progressStore.findRoadmapByNode(item.nodeId, item.roadmapId);
-        const node = roadmap.nodes.find((n) => n.id === item.nodeId);
-        if (node && node.status === 'mastered') {
-          node.status = 'needs-relearn';
-          roadmap.currentNodeId = node.id;
-          if (roadmap.state === 'COMPLETED') roadmap.state = 'TEACHING';
-          await progressStore.saveRoadmap(roadmap);
-          relearn = true;
-        }
+        const flagged = await progressStore.flagRelearn(item.nodeId, item.roadmapId);
+        relearn = flagged.relearn;
       }
       return { item, relearn };
     },

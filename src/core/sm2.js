@@ -9,6 +9,19 @@ export const SM2_MIN_EASINESS = 1.3;
 export const SM2_INITIAL_EASINESS = 2.5;
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Coerce a timestamp to epoch milliseconds.
+ *
+ * Root cause of "review dates never come due": tool callers sometimes pass `now`
+ * as a string, and `now + interval * DAY_MS` then concatenated ("1750000000" +
+ * "86400000") instead of adding — the item's `nextReviewAt` became a nonsense
+ * string that never compares <= a number again.
+ */
+export function toTimestamp(value, fallback = Date.now()) {
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 export function createReviewItem(nodeId, roadmapId, now = Date.now()) {
   return {
     nodeId,
@@ -16,7 +29,7 @@ export function createReviewItem(nodeId, roadmapId, now = Date.now()) {
     easiness: SM2_INITIAL_EASINESS,
     interval: 0,
     repetitions: 0,
-    nextReviewAt: now,
+    nextReviewAt: toTimestamp(now),
     lastQuality: null,
   };
 }
@@ -31,7 +44,11 @@ export function reviewOnce(item, quality, now = Date.now()) {
   if (!Number.isInteger(quality) || quality < 0 || quality > 5) {
     throw new Error(`SM-2 quality must be an integer in 0..5, got ${quality}`);
   }
+  const at = toTimestamp(now);
   let { easiness, interval, repetitions } = item;
+  easiness = Number.isFinite(Number(easiness)) ? Number(easiness) : SM2_INITIAL_EASINESS;
+  interval = Number.isFinite(Number(interval)) ? Number(interval) : 0;
+  repetitions = Number.isFinite(Number(repetitions)) ? Number(repetitions) : 0;
 
   // EF updates first; the interval for repetitions >= 2 uses the NEW easiness
   // (plan Appendix A vector: round(6 * 2.6) = 16).
@@ -58,14 +75,15 @@ export function reviewOnce(item, quality, now = Date.now()) {
     interval,
     repetitions,
     lastQuality: quality,
-    lastReviewAt: now,
-    nextReviewAt: now + interval * DAY_MS,
+    lastReviewAt: at,
+    nextReviewAt: at + interval * DAY_MS,
   };
 }
 
 /** Items whose review is due at `now`, sorted by nextReviewAt ascending. */
 export function dueItems(items, now = Date.now()) {
-  return items
-    .filter((item) => item.nextReviewAt <= now)
-    .sort((a, b) => a.nextReviewAt - b.nextReviewAt);
+  const at = toTimestamp(now);
+  return (Array.isArray(items) ? items : [])
+    .filter((item) => toTimestamp(item?.nextReviewAt, 0) <= at)
+    .sort((a, b) => toTimestamp(a.nextReviewAt, 0) - toTimestamp(b.nextReviewAt, 0));
 }

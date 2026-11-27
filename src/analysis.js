@@ -59,6 +59,11 @@ export function buildAnalysis({ roadmaps, reviewItems, diagnoses = [], learners 
       id: roadmap.id,
       topic: roadmap.topic,
       state: roadmap.state,
+      // Provenance: the panel filters and groups plans by learner and root, so
+      // dropping these here made every plan look like learner "default".
+      learnerId: roadmap.learnerId ?? null,
+      root: roadmap.root ?? null,
+      activeNodeId: roadmap.currentNodeId ?? null,
       createdAt: roadmap.createdAt,
       updatedAt: roadmap.updatedAt,
       nodeCount: nodes.length,
@@ -109,7 +114,14 @@ export function buildAnalysis({ roadmaps, reviewItems, diagnoses = [], learners 
     }
   }
   for (const item of reviewItems) {
-    if (item.lastReviewAt) events.push(item.lastReviewAt);
+    // Every completed review is an activity; counting only `lastReviewAt`
+    // under-reported the heatmap once a node had been reviewed more than once.
+    const history = item.history ?? [];
+    if (history.length) {
+      for (const entry of history) if (entry?.at) events.push(entry.at);
+    } else if (item.lastReviewAt) {
+      events.push(item.lastReviewAt); // legacy items without history
+    }
   }
   for (const diagnosis of diagnoses) {
     if (diagnosis.createdAt) events.push(diagnosis.createdAt);
@@ -123,11 +135,21 @@ export function buildAnalysis({ roadmaps, reviewItems, diagnoses = [], learners 
     if (key >= startDay && key <= endDay) counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const heatmap = [];
+  const offset = new Date(now).getTimezoneOffset() * 60_000;
   for (let key = startDay; key <= endDay; key += 1) {
-    heatmap.push({ day: key * DAY_MS, count: counts.get(key) ?? 0 });
+    // `day` is the raw bucket (kept for backwards compatibility) and is not a
+    // real timestamp in UTC-west zones; `date`/`weekday` are what the panel
+    // renders, so all bucketing happens here instead of in the browser.
+    const localMidnight = new Date(key * DAY_MS + offset);
+    heatmap.push({
+      day: key * DAY_MS,
+      date: `${localMidnight.getUTCFullYear()}-${String(localMidnight.getUTCMonth() + 1).padStart(2, '0')}-${String(localMidnight.getUTCDate()).padStart(2, '0')}`,
+      weekday: (localMidnight.getUTCDay() + 6) % 7, // 0 = Monday
+      count: counts.get(key) ?? 0,
+    });
   }
 
-  const dueCount = reviewItems.filter((i) => i.nextReviewAt <= now).length;
+  const dueCount = reviewItems.filter((i) => Number(i.nextReviewAt) <= now).length;
 
   return {
     generatedAt: now,
