@@ -72,3 +72,4 @@
 3. 行末不再有状态圆点（旧实现会落进更长的副标题中间）——状态只由左侧圆环颜色表达。
 
 `.probe/render-dag.mjs` 会把真实的 `DagChart` 与真实课程数据搬到浏览器里跑一遍（同一条 canvas 测量路径），输出几何审计 `maxTextRight / fits / overlaps`，用于防止布局回归。
+
