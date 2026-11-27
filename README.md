@@ -54,6 +54,24 @@ plugin_manager install_bundle → target: <本仓库目录绝对路径>
 | `masteryWeights` | 等权 | `{ accuracy, depth, transfer, discrimination }` |
 | `reviewReminder` | `recent` | 到期复习提醒对象：`recent` / `all` / `off` |
 
+## 健壮性与安全（v1.2.1）
+
+一轮完整代码审查后的修复，全部有回归探针覆盖（`node .probe/verify.mjs`）：
+
+| 问题 | 修法 |
+| --- | --- |
+| `/course/note`、`/course/delete` 用未校验的 `roadmapId`/`nodeId` 拼路径，`../..` 可删任意目录 | `src/store/paths.js`：`assertSafeId` + `safeJoin`（解析后必须落在根目录内），越界返回 400 |
+| 插件 API 绕过 DSH 鉴权，任意网页可写本地数据 | 拒绝跨站 `Origin`/`sec-fetch-site`（403）；POST 必须 `application/json`（415）；请求体上限 1 MiB（413） |
+| 冷启动时 `ctx.get('webServer')` 为空 → 路由根本不注册（面板全空） | 懒挂载 + 60s 内重试；同理 `workingDirectory` 改为每次调用惰性解析，不再冻结成 fallback 根 |
+| 一个损坏的 JSON 让 `/analysis`、`/courses` 全部 500 | 读失败即把文件隔离为 `*.corrupt-<ts>` 并返回默认值；写入改为 tmp + fsync + rename 原子替换 |
+| `passed: Boolean("false")` 把答错记成通过 | 严格布尔转换，非 `true/false` 直接报错 |
+| 锁定节点也能被直接判"已掌握"、跳序解锁 | `applyMastery` 校验 locked/当前节点/前置；`advance` 按 `prerequisites` 选下一个可学节点 |
+| 并发写同一文件互相覆盖 | 新增 `src/store/lock.js`：按数据目录串行化所有 read-modify-write |
+| 复习项同名节点跨课程改错、字符串 `now` 让 SM-2 永不到期 | `reviewQueue.update` 要求 `roadmapId` 消歧；`toTimestamp` 统一数值化 |
+| 导图白屏（`plan.topic` 缺失）、`activeNode` 字符串/对象混用、hooks 顺序崩溃 | 传完整 `course`、后端同时给 `activeNode` 对象与 `activeNodeTitle`、hooks 前置；新增 ErrorBoundary 兜住渲染异常 |
+| 画像「擅长」输入被逗号吞掉、切学习者串数据、导出下载被取消 | 独立文本态 + `alive` 守卫 + 导出挂 DOM 后再 revoke |
+| 热力图跨时区错列、星期标签写死中文 | 后端给 `date`/`weekday`，前端 i18n 标签 |
+
 ## 结构
 
 ```
