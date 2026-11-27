@@ -421,68 +421,89 @@ window.__ModuleLoader__.load({
     };
 
     function DagChart({ plan, t }) {
-      // Colorful horizontal mind-map: course topic as root on the left, one
-      // branch per concept node in teaching order. Branch stroke cycles through
-      // PALETTE; the end dot carries the node status color. Rendered at natural
-      // size (never stretched), so font sizes stay constant.
+      // Horizontal mind map: course topic as the root on the left, one branch
+      // per concept node in teaching order.
+      //
+      // Layout contract (the previous version broke all three):
+      //   1. everything between the root and the labels is a reserved gutter —
+      //      curves may only live there, never sweep across a row of text;
+      //   2. each label is one fixed row: measured, ellipsised title + subtitle,
+      //      so it cannot spill into the next row or past the right edge;
+      //   3. status is carried by the ring colour — no trailing dot that used to
+      //      land in the middle of the longer subtitle line.
       const nodes = plan.nodes ?? [];
       // Hooks must run unconditionally: the early return used to sit above
       // useState, so a course whose node list became empty mid-session changed
       // the hook count and React unmounted the whole panel.
       const [focus, setFocus] = useState(null);
       if (!nodes.length) return null;
-      const ROW = 66;
-      const ROOT_X = 18;
-      const LABEL_X = 210;
-      const PAD = 20;
-      const estW = (s, size) => Math.max(18, Math.round([...s].length * size * 0.92));
-      const H = PAD * 2 + nodes.length * ROW;
-      const rootY = H / 2;
-      const topic = String(plan.topic ?? '');
-      const rootTitle = topic.length > 12 ? `${topic.slice(0, 11)}…` : topic;
-      const rootW = estW(rootTitle, 13) + 26;
-      const dotX = (title) => LABEL_X + 14 + estW(title, 12) + 14;
-      const branches = nodes.map((n, i) => {
-        const title = n.title.length > 15 ? `${n.title.slice(0, 14)}…` : n.title;
-        const desc = String(n.description ?? '').replace(/[\r\n]+/g, ' ').trim();
-        return {
-          n, i, title,
-          desc: desc.length > 22 ? `${desc.slice(0, 21)}…` : desc,
-          y: PAD + i * ROW + ROW / 2,
-          color: STATUS_COLOR[n.status] ?? TOKEN.idle,
-          stroke: PALETTE[i % PALETTE.length],
-        };
-      });
-      const W = Math.max(...branches.map((b) => dotX(b.title)), LABEL_X + 60) + 24;
+
+      const ROW = 70;
+      const PAD_Y = 24;
+      const ROOT_X = 16;
+      const ROOT_W = 190;
+      const GUTTER = 70;
+      const LABEL_X = ROOT_X + ROOT_W + GUTTER;
+      const TEXT_X = LABEL_X + 17;
+      const TEXT_MAX = 336;
+      const PAD_R = 18;
+
+      const rootY = PAD_Y + ((nodes.length - 1) / 2) * ROW + ROW / 2;
+      const H = PAD_Y * 2 + nodes.length * ROW;
+      const W = TEXT_X + TEXT_MAX + PAD_R;
+
+      const topic = fitText(plan.topic ?? '', ROOT_W - 30, 13, 600);
+      const branches = nodes.map((n, i) => ({
+        n,
+        title: fitText(n.title, TEXT_MAX, 12.5, 500),
+        desc: fitText(String(n.description ?? '').replace(/[\r\n]+/g, ' ').trim(), TEXT_MAX, 10.5),
+        y: PAD_Y + i * ROW + ROW / 2,
+        color: STATUS_COLOR[n.status] ?? TOKEN.idle,
+        stroke: PALETTE[i % PALETTE.length],
+      }));
 
       const tip = (n) => `${n.title}\n${t(`status_${n.status}`) ?? n.status}` +
         (n.mastery ? `\n${t('dimAccuracy')} ${n.mastery.accuracy ?? '—'} / ${t('dimDepth')} ${n.mastery.depth ?? '—'} / ${t('dimTransfer')} ${n.mastery.transfer ?? '—'} / ${t('dimDiscrimination')} ${n.mastery.discrimination ?? '—'} = ${n.mastery.total ?? '—'}` : '');
 
+      const rootRight = ROOT_X + ROOT_W;
+      // Both control points stay inside the gutter, so a curve leaves the root
+      // horizontally and enters the label horizontally without crossing text.
+      const curve = (y) => {
+        const c1 = rootRight + Math.min(26, GUTTER * 0.36);
+        const c2 = LABEL_X - Math.min(40, GUTTER * 0.58);
+        return `M ${rootRight} ${rootY} C ${c1} ${rootY}, ${c2} ${y}, ${LABEL_X - 7} ${y}`;
+      };
+
       return h('div', { style: { overflowX: 'auto' } },
-        h('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, style: { display: 'block', maxWidth: 'none' } },
-          // branches
+        h('svg', {
+          viewBox: `0 0 ${W} ${H}`,
+          width: W,
+          height: H,
+          style: { display: 'block', maxWidth: 'none', overflow: 'visible' },
+        },
           branches.map((b) => {
-            const x1 = ROOT_X + rootW;
-            const x2 = dotX(b.title);
-            const mx = (x1 + x2) / 2;
             const dim = focus !== null && focus !== b.n.id;
             return h('path', {
               key: `e${b.n.id}`,
-              d: `M ${x1} ${rootY} C ${mx} ${rootY}, ${mx} ${b.y}, ${x2} ${b.y}`,
-              fill: 'none', stroke: b.stroke, strokeWidth: 1.8,
-              opacity: dim ? 0.15 : 0.9,
+              d: curve(b.y),
+              fill: 'none',
+              stroke: b.stroke,
+              strokeWidth: 1.8,
+              strokeLinecap: 'round',
+              opacity: dim ? 0.14 : 0.85,
+              style: { transition: 'opacity .15s' },
             });
           }),
           // root node
           h('g', null,
             h('rect', {
-              x: ROOT_X, y: rootY - 19, width: rootW, height: 38, rx: 10,
+              x: ROOT_X, y: rootY - 20, width: ROOT_W, height: 40, rx: 11,
               fill: TOKEN.surface2, stroke: TOKEN.brand, strokeWidth: 1.6,
             }),
-            h('circle', { cx: ROOT_X + rootW, cy: rootY, r: 4.5, fill: TOKEN.surface, stroke: TOKEN.brand, strokeWidth: 1.6 }),
-            h('text', { x: ROOT_X + 13, y: rootY + 4.5, fontSize: 13, fontWeight: 600, fill: TOKEN.text }, rootTitle),
+            h('text', {
+              x: ROOT_X + 15, y: rootY + 4.5, fontSize: 13, fontWeight: 600, fill: TOKEN.text, fontFamily: MAP_FONT,
+            }, topic),
           ),
-          // branch nodes
           branches.map((b) => {
             const dim = focus !== null && focus !== b.n.id;
             return h('g', {
@@ -493,14 +514,65 @@ window.__ModuleLoader__.load({
               style: { cursor: 'default', transition: 'opacity .15s' },
             },
               h('title', null, tip(b.n)),
-              h('circle', { cx: LABEL_X, cy: b.y, r: 5, fill: TOKEN.surface, stroke: b.color, strokeWidth: 1.8 }),
-              h('text', { x: LABEL_X + 14, y: b.y + 4, fontSize: 12, fill: TOKEN.text }, b.title),
-              b.desc ? h('text', { x: LABEL_X + 14, y: b.y + 19, fontSize: 10, fill: TOKEN.text2 }, b.desc) : null,
-              h('circle', { cx: dotX(b.title), cy: b.y, r: 5.5, fill: b.color }),
+              h('circle', {
+                cx: LABEL_X, cy: b.y - 4, r: 5.5,
+                fill: TOKEN.surface, stroke: b.color, strokeWidth: 2,
+              }),
+              h('text', { x: TEXT_X, y: b.y, fontSize: 12.5, fontWeight: 500, fill: TOKEN.text, fontFamily: MAP_FONT }, b.title),
+              b.desc ? h('text', { x: TEXT_X, y: b.y + 17, fontSize: 10.5, fill: TOKEN.text2, fontFamily: MAP_FONT }, b.desc) : null,
             );
           }),
         ),
       );
+    }
+
+    // Text measuring for the mind map. SVG <text> never wraps, so every line has
+    // to be shortened until it fits a *fixed* column — guessing at character
+    // counts is what let subtitles run past the canvas edge and into the next
+    // row. Declared after DagChart on purpose: both are only called at render
+    // time, long after the module body has initialised these bindings.
+    const measureCache = new Map();
+    // The stack is written on the <text> nodes too, so the width we measure is
+    // the width the browser actually paints (otherwise a themed font makes the
+    // ellipsis land in the wrong place).
+    const MAP_FONT = 'system-ui, "Microsoft YaHei", "PingFang SC", sans-serif';
+    function measureText(text, size, weight = 400) {
+      const key = `${size}|${weight}|${text}`;
+      const hit = measureCache.get(key);
+      if (hit !== undefined) return hit;
+      let width = null;
+      if (typeof document !== 'undefined' && document.createElement) {
+        try {
+          const ctx = document.createElement('canvas').getContext('2d');
+          if (ctx) {
+            ctx.font = `${weight} ${size}px ${MAP_FONT}`;
+            width = ctx.measureText(String(text)).width;
+          }
+        } catch { width = null; }
+      }
+      if (width === null) {
+        // Non-DOM fallback (headless probes): CJK ≈ 1em, latin ≈ 0.6em.
+        width = [...String(text)]
+          .reduce((w, ch) => w + (/[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? size : size * 0.6), 0);
+      }
+      if (measureCache.size > 600) measureCache.clear();
+      measureCache.set(key, width);
+      return width;
+    }
+
+    /** Shorten `text` with an ellipsis until it fits `maxWidth`. */
+    function fitText(text, maxWidth, size, weight = 400) {
+      const chars = [...String(text ?? '')];
+      if (!chars.length) return '';
+      if (measureText(chars.join(''), size, weight) <= maxWidth) return chars.join('');
+      let lo = 0;
+      let hi = chars.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (measureText(`${chars.slice(0, mid).join('')}…`, size, weight) <= maxWidth) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo > 0 ? `${chars.slice(0, lo).join('')}…` : '';
     }
 
     // ---- activity heatmap ------------------------------------------------------
