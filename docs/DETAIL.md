@@ -35,6 +35,15 @@
 
 学习数据按学习者（`learn-<learnerId>/`）沉淀在当前工作区的 `dsh-learn/` 文件夹（JSON/Markdown，可直接查看）。画像可通过工具、插件详情页卡片查看/编辑；`ai_learn_export` / `ai_learn_import` 支持备份与迁移，面板也可一键导出。
 
+## 按需激活（v1.2.3）
+
+启用插件不等于给每个会话都注入私教上下文。14 个 `ai_learn_*` 工具只在「这个会话确实要学东西」时才会被声明：
+
+- 判定时机是每一步的工具准备阶段（`ctx.tools.register(tool, { when })`，条件是纯函数，不改注册、不启动工具）；
+- 触发条件：用户消息里出现明确的学习意图措辞；或 `learn-expert` 技能被加载（技能正文带 `<skill_content name="learn-expert">` 标记，随消息一起进入会话）；或复习到期的系统提醒；
+- 实时事件通过 `session/event` 观察；恢复的历史会话（seed 事件不会重放）在第一次判定时用 `session.deriveMessages()` 一次性回看；
+- 命中后在该会话内保持开启（课程跨多轮），未命中的会话完全看不到这些工具。
+
 ## 依赖与边界
 
 - 教学内容质量依赖当前模型；评分与追问由 `learn-expert` 技能协议约束。
@@ -63,4 +72,3 @@
 3. 行末不再有状态圆点（旧实现会落进更长的副标题中间）——状态只由左侧圆环颜色表达。
 
 `.probe/render-dag.mjs` 会把真实的 `DagChart` 与真实课程数据搬到浏览器里跑一遍（同一条 canvas 测量路径），输出几何审计 `maxTextRight / fits / overlaps`，用于防止布局回归。
-
