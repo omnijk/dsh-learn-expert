@@ -259,8 +259,10 @@ export function apply(ctx, config = {}) {
                     nodes.push({
                       id: n.id,
                       title: n.title,
+                      description: n.description ?? '',
                       status: n.status,
                       prerequisites: n.prerequisites ?? [],
+                      mastery: n.mastery ?? null,
                       total: n.mastery?.total ?? null,
                       assessedAt: n.mastery?.assessedAt ?? null,
                       hasNote,
