@@ -1,6 +1,6 @@
 {
   "name": "dsh-learn-expert",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "1v1 AI private tutor for DeepSeek Harness: diagnose first, teach section by section with Socratic questioning, gate progress on mastery, take notes in the learner's own words, and schedule spaced reviews. Ships a sidebar analysis panel with mastery timeline, roadmap DAG and activity heatmap.",
   "type": "module",
   "license": "MIT",

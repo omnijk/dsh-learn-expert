@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
+import { mkdir, rm, stat, writeFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildAnalysis } from './src/analysis.js';
+import { layoutDag } from './src/core/dag-layout.js';
 import { readJson, writeJson } from './src/store/json-file.js';
 import { LearnerRegistry } from './src/store/learner-registry.js';
 import { ProfileStore } from './src/store/profile-store.js';
+import { ReviewQueue } from './src/store/review-queue.js';
 import { createLearnTools } from './src/tools/learn-tools.js';
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +36,47 @@ function readBody(req) {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Course metadata ("课堂" UI): favorites, locks, aliases, groups and the chat
+// session each course was taught in. Lives at <fallbackRoot>/course-meta.json,
+// keyed by `${root}::${learnerId}::${roadmapId}` so courses stay addressable
+// across workspace roots.
+// ---------------------------------------------------------------------------
+function courseKey(root, learnerId, roadmapId) {
+  return `${root}::${learnerId}::${roadmapId}`;
+}
+
+function makeCourseMetaStore(path) {
+  return {
+    async all() {
+      return readJson(path, {});
+    },
+    async get(root, learnerId, roadmapId) {
+      const all = await readJson(path, {});
+      return all[courseKey(root, learnerId, roadmapId)] ?? {};
+    },
+    async patch(root, learnerId, roadmapId, patch) {
+      const all = await readJson(path, {});
+      const key = courseKey(root, learnerId, roadmapId);
+      const next = { ...(all[key] ?? {}), ...patch, updatedAt: Date.now() };
+      for (const [k, v] of Object.entries(next)) if (v === undefined || v === null || v === '') delete next[k];
+      all[key] = next;
+      await writeJson(path, all);
+      return next;
+    },
+    async remove(root, learnerId, roadmapId) {
+      const all = await readJson(path, {});
+      delete all[courseKey(root, learnerId, roadmapId)];
+      await writeJson(path, all);
+    },
+  };
+}
+
+/** True when `dir` looks like a learn data root this plugin manages. */
+function isLearnRoot(dir) {
+  return typeof dir === 'string' && /(^|[\\/])dsh-learn$/.test(dir);
 }
 
 /**
@@ -67,6 +111,40 @@ export function apply(ctx, config = {}) {
 
   const tools = createLearnTools({ registry, masteryThreshold });
   const reminderStatePath = join(fallbackRoot, 'reminder-state.json');
+  const courseMeta = makeCourseMetaStore(join(fallbackRoot, 'course-meta.json'));
+
+  /**
+   * Bind a roadmap to the chat session it is being taught in, so the 课堂 UI
+   * can offer a "随手问" jump back into that conversation.
+   */
+  async function bindSession(exec, roadmapId, learnerId) {
+    const sessionId = exec?.agent?.session?.id;
+    if (!sessionId || !roadmapId) return;
+    try {
+      const root = await registry.root(exec);
+      await courseMeta.patch(root, learnerId ?? 'default', roadmapId, { sessionId, lastSessionAt: Date.now() });
+    } catch { /* best effort */ }
+  }
+
+  /** Wrap a tool so a successful call stamps its roadmap's session binding. */
+  function withSessionBinding(tool) {
+    const execute = tool.execute;
+    return {
+      ...tool,
+      async execute(args, exec) {
+        const result = await execute(args, exec);
+        try {
+          const roadmapId =
+            args?.roadmapId ??
+            result?.roadmapId ??
+            result?.roadmap?.id ??
+            (tool.name === 'ai_learn_create_roadmap' ? result?.id : undefined);
+          await bindSession(exec, roadmapId, args?.learnerId);
+        } catch { /* never break the tool */ }
+        return result;
+      },
+    };
+  }
 
   /** Due review items across every known root. */
   async function dueReviewCount() {
@@ -108,7 +186,7 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => {
-    const disposers = tools.map((tool) => ctx.tools.register(tool));
+    const disposers = tools.map((tool) => ctx.tools.register(withSessionBinding(tool)));
 
     // ---- Web API for the analysis panel / profile card (F3, F4, F5, F9) ----
     const webServer = ctx.get('webServer');
@@ -160,6 +238,140 @@ export function apply(ctx, config = {}) {
                 sendJson(res, 200, bundle, {
                   'content-disposition': `attachment; filename="learn-expert-${learnerId}-${Date.now()}.json"`,
                 });
+                return;
+              }
+
+              if (sub === 'courses' && req.method === 'GET') {
+                const { roadmaps, reviewItems } = await registry.aggregate(null);
+                const meta = await courseMeta.all();
+                const now = Date.now();
+                const courses = [];
+                for (const r of roadmaps) {
+                  const key = courseKey(r.root, r.learnerId, r.id);
+                  const m = meta[key] ?? {};
+                  const notesDir = join(r.root, `learn-${r.learnerId}`, 'notes', r.id);
+                  const nodes = [];
+                  for (const n of r.nodes ?? []) {
+                    let hasNote = false;
+                    let hasUserNote = false;
+                    try { hasNote = (await stat(join(notesDir, `${n.id}.md`))).size > 0; } catch { /* none */ }
+                    try { hasUserNote = (await stat(join(notesDir, `${n.id}.user.md`))).size > 0; } catch { /* none */ }
+                    nodes.push({
+                      id: n.id,
+                      title: n.title,
+                      status: n.status,
+                      prerequisites: n.prerequisites ?? [],
+                      total: n.mastery?.total ?? null,
+                      assessedAt: n.mastery?.assessedAt ?? null,
+                      hasNote,
+                      hasUserNote,
+                    });
+                  }
+                  const reviews = reviewItems
+                    .filter((i) => i.roadmapId === r.id && i.learnerId === r.learnerId && i.root === r.root)
+                    .map((i) => ({
+                      nodeId: i.nodeId,
+                      roadmapId: i.roadmapId,
+                      nextReviewAt: i.nextReviewAt,
+                      due: i.nextReviewAt <= now,
+                      title: (r.nodes ?? []).find((n) => n.id === i.nodeId)?.title ?? i.nodeId,
+                    }));
+                  const nodeCount = nodes.length;
+                  const masteredCount = nodes.filter((n) => n.status === 'mastered').length;
+                  courses.push({
+                    key,
+                    root: r.root,
+                    learnerId: r.learnerId,
+                    roadmapId: r.id,
+                    topic: r.topic,
+                    state: r.state,
+                    dag: layoutDag(r.nodes ?? []),
+                    createdAt: r.createdAt,
+                    updatedAt: r.updatedAt,
+                    nodeCount,
+                    masteredCount,
+                    relearnCount: nodes.filter((n) => n.status === 'needs-relearn').length,
+                    activeNode: nodes.find((n) => n.status === 'active')?.title ?? null,
+                    dueCount: reviews.filter((i) => i.due).length,
+                    reviews,
+                    nodes,
+                    meta: {
+                      alias: m.alias ?? null,
+                      favorite: m.favorite === true,
+                      locked: m.locked === true,
+                      group: m.group ?? null,
+                      sessionId: m.sessionId ?? null,
+                    },
+                  });
+                }
+                courses.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+                sendJson(res, 200, { generatedAt: now, courses });
+                return;
+              }
+
+              if (sub === 'course/meta' && req.method === 'POST') {
+                const body = JSON.parse((await readBody(req)) || '{}');
+                const { root, learnerId, roadmapId, patch } = body;
+                if (!isLearnRoot(root) || !learnerId || !roadmapId || typeof patch !== 'object' || !patch) {
+                  sendJson(res, 400, { error: 'course/meta requires { root, learnerId, roadmapId, patch }' });
+                  return;
+                }
+                const allowed = {};
+                for (const k of ['alias', 'favorite', 'locked', 'group']) {
+                  if (k in patch) allowed[k] = patch[k];
+                }
+                const meta = await courseMeta.patch(root, learnerId, roadmapId, allowed);
+                sendJson(res, 200, { ok: true, meta });
+                return;
+              }
+
+              if (sub === 'course/note' && req.method === 'GET') {
+                const root = url.searchParams.get('root');
+                const learnerId = url.searchParams.get('learnerId');
+                const roadmapId = url.searchParams.get('roadmapId');
+                const nodeId = url.searchParams.get('nodeId');
+                const kind = url.searchParams.get('kind') === 'user' ? 'user' : 'tutor';
+                if (!isLearnRoot(root) || !learnerId || !roadmapId || !nodeId) {
+                  sendJson(res, 400, { error: 'course/note requires root, learnerId, roadmapId, nodeId' });
+                  return;
+                }
+                const file = join(root, `learn-${learnerId}`, 'notes', roadmapId, `${nodeId}${kind === 'user' ? '.user' : ''}.md`);
+                let content = '';
+                try { content = await readFile(file, 'utf8'); } catch { /* no note yet */ }
+                sendJson(res, 200, { content, kind });
+                return;
+              }
+
+              if (sub === 'course/note' && req.method === 'POST') {
+                const body = JSON.parse((await readBody(req)) || '{}');
+                const { root, learnerId, roadmapId, nodeId, content } = body;
+                if (!isLearnRoot(root) || !learnerId || !roadmapId || !nodeId || typeof content !== 'string') {
+                  sendJson(res, 400, { error: 'course/note POST requires { root, learnerId, roadmapId, nodeId, content }' });
+                  return;
+                }
+                const dir = join(root, `learn-${learnerId}`, 'notes', roadmapId);
+                await mkdir(dir, { recursive: true });
+                await writeFile(join(dir, `${nodeId}.user.md`), content, 'utf8');
+                sendJson(res, 200, { ok: true });
+                return;
+              }
+
+              if (sub === 'course/delete' && req.method === 'POST') {
+                const body = JSON.parse((await readBody(req)) || '{}');
+                const { root, learnerId, roadmapId } = body;
+                if (!isLearnRoot(root) || !learnerId || !roadmapId) {
+                  sendJson(res, 400, { error: 'course/delete requires { root, learnerId, roadmapId }' });
+                  return;
+                }
+                const dir = join(root, `learn-${learnerId}`);
+                await rm(join(dir, 'roadmaps', `${roadmapId}.json`), { force: true });
+                await rm(join(dir, 'notes', roadmapId), { recursive: true, force: true });
+                const queue = new ReviewQueue(dir);
+                const items = await queue.list();
+                await queue.saveAll(items.filter((i) => i.roadmapId !== roadmapId));
+                await courseMeta.remove(root, learnerId, roadmapId);
+                registry.cache.delete(dir);
+                sendJson(res, 200, { ok: true });
                 return;
               }
 
