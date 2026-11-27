@@ -74,6 +74,7 @@ window.__ModuleLoader__.load({
         title: '学习分析', refresh: '刷新', export: '导出数据',
         subtitle: 'learn-expert 私教：掌握进度折线图 ｜ 路线图 DAG ｜ 学习热力图 ｜ 复习队列',
         loading: '加载中…', loadFailed: '加载失败',
+        crashed: '这个面板出错了', retry: '重试',
         emptyTitle: '还没有学习计划', emptyBody: '回到对话，对私教说「我想学 ……」开始第一节课。',
         statPlans: '学习计划', statPlansHint: '按主题拆分',
         statMastered: '已掌握节点', statMasteredHint: '掌握度 ≥80 计入',
@@ -90,6 +91,7 @@ window.__ModuleLoader__.load({
         allPlans: '全部计划', allLearners: '全部学习者',
         masteredOf: '{m}/{n} 节点', avgScore: '均分 {n}', relearn: '{n} 待重学',
         heatCell: '{date}：{n} 次学习活动',
+        wdShort: '一,二,三,四,五,六,日',
         state_ROADMAP_READY: '待开始', state_TEACHING: '学习中', state_QUESTIONING: '追问中',
         state_CHECKPOINT: '检查点', state_REMEDIATING: '重讲中', state_COMPLETED: '已完成',
         state_REVIEWING: '复习中', state_DIAGNOSING: '摸底中', state_IDLE: '未开始',
@@ -137,6 +139,7 @@ window.__ModuleLoader__.load({
         homeIdea: '想弄懂点新东西？', homeIdeaPlaceholder: '比如：为什么利率上升，股市往往跌？',
         homeIdeaGo: '去问私教',
         homeContinue: '继续学习', homeBackToCourse: '回到课堂', homeAllCourses: '全部课程',
+        homeIdeaCopied: '已复制到剪贴板，在对话框粘贴发送即可开始',
         homeLastStudy: '上次学习：{d}', homeNone: '还没有进行中的课程',
         feynmanTitle: '费曼复述', feynmanHint: '合上资料，用自己的话把这个知识点讲给"外行"听。讲不清楚的地方就是你的盲区。',
         feynmanPlaceholder: '用自己的话讲一遍……', feynmanSaved: '已存入手记',
@@ -148,6 +151,7 @@ window.__ModuleLoader__.load({
         title: 'Learning analysis', refresh: 'Refresh', export: 'Export data',
         subtitle: 'learn-expert tutor: mastery timeline | roadmap DAG | activity heatmap | review queue',
         loading: 'Loading…', loadFailed: 'Load failed',
+        crashed: 'This panel hit an error', retry: 'Retry',
         emptyTitle: 'No learning plans yet', emptyBody: 'Go back to the conversation and tell the tutor "I want to learn …".',
         statPlans: 'Plans', statPlansHint: 'one per topic',
         statMastered: 'Nodes mastered', statMasteredHint: 'mastery ≥80 counts',
@@ -164,6 +168,7 @@ window.__ModuleLoader__.load({
         allPlans: 'All plans', allLearners: 'All learners',
         masteredOf: '{m}/{n} nodes', avgScore: 'avg {n}', relearn: '{n} to relearn',
         heatCell: '{date}: {n} learning activities',
+        wdShort: 'M,T,W,T,F,S,S',
         state_ROADMAP_READY: 'ready', state_TEACHING: 'teaching', state_QUESTIONING: 'questioning',
         state_CHECKPOINT: 'checkpoint', state_REMEDIATING: 'remediating', state_COMPLETED: 'completed',
         state_REVIEWING: 'reviewing', state_DIAGNOSING: 'diagnosing', state_IDLE: 'idle',
@@ -209,6 +214,7 @@ window.__ModuleLoader__.load({
         homeIdea: 'Want to understand something new?', homeIdeaPlaceholder: 'e.g. why do stocks fall when interest rates rise?',
         homeIdeaGo: 'Ask the tutor',
         homeContinue: 'Continue learning', homeBackToCourse: 'Back to classroom', homeAllCourses: 'All courses',
+        homeIdeaCopied: 'Copied to clipboard — paste it into the chat to start',
         homeLastStudy: 'last study: {d}', homeNone: 'No course in progress',
         feynmanTitle: 'Feynman retelling', feynmanHint: 'Close your notes and explain this concept to a layperson in your own words. Where you stumble is your blind spot.',
         feynmanPlaceholder: 'Explain it in your own words…', feynmanSaved: 'Saved to notes',
@@ -249,9 +255,9 @@ window.__ModuleLoader__.load({
 
     // ---- data -------------------------------------------------------------
     function api(path, options) {
-      const query = window.location.search || '';
-      const joiner = path.includes('?') ? (query ? '&' : '') : (query ? '?' : '');
-      return fetch(`/dsh-learn-expert/api/${path}${joiner}${query.replace(/^\?/, '')}`, {
+      // NOTE: never append window.location.search here — that string belongs to
+      // the DSH web shell (auth/route params), not to this API.
+      return fetch(`/dsh-learn-expert/api/${path}`, {
         credentials: 'same-origin',
         ...options,
       }).then((res) => {
@@ -404,8 +410,11 @@ window.__ModuleLoader__.load({
       // PALETTE; the end dot carries the node status color. Rendered at natural
       // size (never stretched), so font sizes stay constant.
       const nodes = plan.nodes ?? [];
-      if (!nodes.length) return null;
+      // Hooks must run unconditionally: the early return used to sit above
+      // useState, so a course whose node list became empty mid-session changed
+      // the hook count and React unmounted the whole panel.
       const [focus, setFocus] = useState(null);
+      if (!nodes.length) return null;
       const ROW = 66;
       const ROOT_X = 18;
       const LABEL_X = 210;
@@ -413,7 +422,8 @@ window.__ModuleLoader__.load({
       const estW = (s, size) => Math.max(18, Math.round([...s].length * size * 0.92));
       const H = PAD * 2 + nodes.length * ROW;
       const rootY = H / 2;
-      const rootTitle = plan.topic.length > 12 ? `${plan.topic.slice(0, 11)}…` : plan.topic;
+      const topic = String(plan.topic ?? '');
+      const rootTitle = topic.length > 12 ? `${topic.slice(0, 11)}…` : topic;
       const rootW = estW(rootTitle, 13) + 26;
       const dotX = (title) => LABEL_X + 14 + estW(title, 12) + 14;
       const branches = nodes.map((n, i) => {
@@ -479,7 +489,10 @@ window.__ModuleLoader__.load({
 
     // ---- activity heatmap ------------------------------------------------------
     function Heatmap({ days, t }) {
-      const leadBlanks = days.length ? (new Date(days[0].day).getDay() + 6) % 7 : 0;
+      // `date`/`weekday` come from the host, which buckets by the *local*
+      // calendar day. Deriving the weekday in the browser from the raw bucket
+      // put every column one day off west of UTC.
+      const leadBlanks = days.length ? (days[0].weekday ?? 0) : 0;
       const cells = [...Array(leadBlanks).fill(null), ...days];
       const weeks = Math.ceil(cells.length / 7);
       const maxCount = days.reduce((m, d) => Math.max(m, d.count), 0);
@@ -496,13 +509,15 @@ window.__ModuleLoader__.load({
         'color-mix(in srgb, var(--dsw-alias-brand-primary) 80%, transparent)',
         'var(--dsw-alias-brand-primary)',
       ];
+      const weekdayLabels = String(t('wdShort')).split(',');
       return h('div', { style: { display: 'flex', gap: 6 } },
         h('div', {
           style: {
             display: 'grid', gridTemplateRows: 'repeat(7, 12px)', rowGap: 3,
             fontSize: 10, color: TOKEN.text2, marginRight: 2, paddingTop: 1,
           },
-        }, ['一', '', '三', '', '五', '', '日'].map((d, i) => h('span', { key: i, style: { lineHeight: '12px' } }, d))),
+        }, [0, 1, 2, 3, 4, 5, 6].map((i) => h('span', { key: i, style: { lineHeight: '12px' } },
+          i % 2 === 0 ? (weekdayLabels[i] ?? '') : ''))),
         h('div', {
           style: {
             display: 'grid', gridAutoFlow: 'column', gridTemplateRows: 'repeat(7, 12px)',
@@ -510,7 +525,7 @@ window.__ModuleLoader__.load({
           },
         }, cells.map((d, i) => h('div', {
           key: i,
-          title: d ? t('heatCell', { date: fmtDate(d.day), n: d.count }) : undefined,
+          title: d ? t('heatCell', { date: d.date ?? fmtDate(d.day), n: d.count }) : undefined,
           style: d ? {
             width: 12, height: 12, borderRadius: 3,
             background: levelColor[level(d.count)],
@@ -652,7 +667,7 @@ window.__ModuleLoader__.load({
             }, c.meta.group) : null,
           ),
           h('span', {
-            style: { display: 'inline-flex', gap: 2, visibility: hover ? 'visible' : 'hidden', flexShrink: 0 },
+            style: { display: 'inline-flex', gap: 2, opacity: hover ? 1 : 0.55, flexShrink: 0, transition: 'opacity .15s' },
           },
             h(IconBtn, {
               title: c.meta.favorite ? t('favRemove') : t('favAdd'),
@@ -669,9 +684,9 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('div', { style: { fontSize: 12, color: TOKEN.text2, marginTop: 4, minHeight: 16 } },
-          c.activeNode ? t('activeNode', { t: c.activeNode })
-            : done ? t(`state_COMPLETED`)
-            : t(`state_${c.state}`) ?? c.state,
+          c.activeNodeTitle ? t('activeNode', { t: c.activeNodeTitle })
+            : done ? t('state_COMPLETED')
+            : t(`state_${c.state}`),
         ),
         h(SegmentedProgress, { nodes: c.nodes }),
         h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 } },
@@ -684,7 +699,7 @@ window.__ModuleLoader__.load({
             style: {
               cursor: 'pointer', fontSize: 12, padding: '3px 12px', borderRadius: 999,
               border: `1px solid ${TOKEN.brand}`, background: 'transparent', color: TOKEN.brand,
-              visibility: hover ? 'visible' : 'hidden',
+              opacity: hover ? 1 : 0.6, transition: 'opacity .15s',
             },
           }, `💬 ${t('askTutor')}`),
         ),
@@ -756,24 +771,26 @@ window.__ModuleLoader__.load({
     }
 
     /** Inline expander under a node row: tutor note / mini DAG / user scratchpad. */
-    function NodePane({ course, node, kind, t, onSaved }) {
-      const [content, setContent] = useState(null);
-      const [draft, setDraft] = useState(null);
+    function NodePane({ course, node, kind, t, onSaved, state, onLoad, onEdit }) {
       const [status, setStatus] = useState(null);
       useEffect(() => {
-        setContent(null); setDraft(null); setStatus(null);
-        if (kind === 'map') return;
+        if (kind === 'map') return undefined;
+        if (state.content !== null) return undefined; // already fetched for this row
+        let alive = true;
         const q = `course/note?root=${encodeURIComponent(course.root)}&learnerId=${encodeURIComponent(course.learnerId)}` +
           `&roadmapId=${encodeURIComponent(course.roadmapId)}&nodeId=${encodeURIComponent(node.id)}&kind=${kind === 'scratch' ? 'user' : 'tutor'}`;
-        api(q).then((d) => { setContent(d.content); setDraft(d.content); }).catch(() => setContent(''));
-      }, [course.key, node.id, kind]);
+        api(q)
+          .then((d) => { if (alive) onLoad(d.content ?? ''); })
+          .catch(() => { if (alive) onLoad(''); });
+        return () => { alive = false; };
+      }, [kind, course.key, node.id, state.content]);
       const save = () => {
         setStatus(null);
         api('course/note', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             root: course.root, learnerId: course.learnerId,
-            roadmapId: course.roadmapId, nodeId: node.id, content: draft ?? '',
+            roadmapId: course.roadmapId, nodeId: node.id, content: state.draft ?? '',
           }),
         }).then(() => { setStatus('ok'); onSaved?.(); }).catch(() => setStatus('fail'));
       };
@@ -784,22 +801,24 @@ window.__ModuleLoader__.load({
       if (kind === 'map') {
         return h('div', { style: boxStyle },
           h('div', { style: { color: TOKEN.text2, marginBottom: 6 } }, `${t('mapTitle')} · ${course.topic}`),
-          h(DagChart, { plan: { nodes: course.nodes, dag: course.dag }, t }),
+          // Pass the whole course: DagChart needs `topic` for the root label and
+          // used to throw on `plan.topic.length` when only {nodes, dag} was passed.
+          h(DagChart, { plan: course, t }),
         );
       }
       if (kind === 'note') {
         return h('div', { style: boxStyle },
-          content === null ? t('loading')
-            : content ? h('pre', {
+          state.content === null ? t('loading')
+            : state.content ? h('pre', {
                 style: { margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', color: TOKEN.text },
-              }, content)
+              }, state.content)
             : h('span', { style: { color: TOKEN.text2 } }, t('noteEmpty')),
         );
       }
       return h('div', { style: boxStyle },
         h('textarea', {
-          value: draft ?? '', rows: 4, placeholder: t('scratchPlaceholder'),
-          onChange: (e) => setDraft(e.target.value),
+          value: state.draft ?? '', rows: 4, placeholder: t('scratchPlaceholder'),
+          onChange: (e) => onEdit(e.target.value),
           style: {
             width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, borderRadius: 6,
             border: `1px solid ${TOKEN.border}`, background: TOKEN.surface, color: TOKEN.text,
@@ -822,6 +841,13 @@ window.__ModuleLoader__.load({
 
     function NodeRow({ course, node, index, t, onSaved }) {
       const [pane, setPane] = useState(null); // null | 'note' | 'map' | 'scratch'
+      // Drafts live here so switching panes no longer throws away unsaved text.
+      const [panes, setPanes] = useState({});
+      const paneState = panes[pane] ?? { content: null, draft: null };
+      const patchPane = (kind, next) => setPanes((all) => ({
+        ...all,
+        [kind]: { ...(all[kind] ?? { content: null, draft: null }), ...next },
+      }));
       const toggle = (kind) => setPane(pane === kind ? null : kind);
       const pill = (kind, label, marked) => h('button', {
         onClick: () => toggle(kind),
@@ -889,7 +915,12 @@ window.__ModuleLoader__.load({
                 pill('scratch', t('nodeScratch'), node.hasUserNote),
               ),
         ),
-        pane ? h(NodePane, { course, node, kind: pane, t, onSaved }) : null,
+        pane ? h(NodePane, {
+          course, node, kind: pane, t, onSaved,
+          state: paneState,
+          onLoad: (content) => patchPane(pane, { content, draft: content }),
+          onEdit: (draft) => patchPane(pane, { draft }),
+        }) : null,
       );
     }
 
@@ -1057,6 +1088,7 @@ window.__ModuleLoader__.load({
       const t = useT(i18n);
       const [data, setData] = useState(null);
       const [idea, setIdea] = useState('');
+      const [copied, setCopied] = useState(false);
       useEffect(() => {
         let alive = true;
         api('courses').then((d) => { if (alive) setData(d); }).catch(() => { if (alive) setData({ courses: [] }); });
@@ -1066,12 +1098,31 @@ window.__ModuleLoader__.load({
       // courses arrive sorted by updatedAt desc — first unfinished course is "current".
       const current = courses.find((c) => c.nodeCount > 0 && c.masteredCount < c.nodeCount) ?? null;
       const activeNode = current?.activeNode ?? null;
-      const activeIdx = current && activeNode ? current.nodes.indexOf(activeNode) : -1;
+      // `activeNode` is a node object now; match by id (the old code passed the
+      // title string to indexOf on the node array and always got -1).
+      const activeIdx = current && activeNode
+        ? current.nodes.findIndex((n) => n.id === activeNode.id)
+        : -1;
       const now = new Date();
       const hr = now.getHours();
       const greet = hr < 11 ? t('greetMorning') : hr < 14 ? t('greetNoon') : hr < 18 ? t('greetAfternoon') : t('greetEvening');
       const dateLine = new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', weekday: 'short' }).format(now);
-      const goChat = () => jumpToSession(navCtx, null);
+      // The chat composer cannot be pre-filled from a plugin, so the typed idea
+      // is copied to the clipboard before jumping — otherwise it was silently
+      // thrown away when the panel closed.
+      const goChat = () => {
+        const text = idea.trim();
+        if (!text) { jumpToSession(navCtx, null); return; }
+        try {
+          navigator.clipboard?.writeText(text).then(() => setCopied(true)).catch(() => {});
+        } catch { /* clipboard blocked */ }
+        jumpToSession(navCtx, null);
+      };
+      useEffect(() => {
+        if (!copied) return undefined;
+        const id = setTimeout(() => setCopied(false), 6000);
+        return () => clearTimeout(id);
+      }, [copied]);
 
       return h('div', { style: { marginTop: 4 } },
         h('div', { style: { fontSize: 12, color: TOKEN.text2 } }, dateLine),
@@ -1103,6 +1154,7 @@ window.__ModuleLoader__.load({
               },
             }, '➤'),
           ),
+          copied ? h('div', { style: { fontSize: 11, color: TOKEN.success, marginTop: 8 } }, t('homeIdeaCopied')) : null,
         ),
         // continue-learning card
         current ? h('div', {
@@ -1162,11 +1214,17 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null);
       const [status, setStatus] = useState(null);
       useEffect(() => {
-        if (!open || draft !== null) return;
+        if (!open) return undefined;
+        let alive = true;
         const qs = `root=${encodeURIComponent(course.root)}&learnerId=${encodeURIComponent(course.learnerId)}`
           + `&roadmapId=${encodeURIComponent(course.roadmapId)}&nodeId=${encodeURIComponent(item.nodeId)}&kind=user`;
-        api(`course/note?${qs}`).then((d) => setDraft(d.content ?? '')).catch(() => setDraft(''));
-      }, [open]);
+        // Re-fetch whenever the target changes (the dep list used to be `[open]`
+        // only) and drop the result if the component went away meanwhile.
+        api(`course/note?${qs}`)
+          .then((d) => { if (alive) setDraft(d.content ?? ''); })
+          .catch(() => { if (alive) setDraft(''); });
+        return () => { alive = false; };
+      }, [open, course.root, course.learnerId, course.roadmapId, item.nodeId]);
       const save = () => {
         setStatus(null);
         api('course/note', {
@@ -1370,10 +1428,18 @@ window.__ModuleLoader__.load({
           .then((bundle) => {
             const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(blob);
+            a.href = url;
             a.download = `learn-expert-${id}-${new Date().toISOString().slice(0, 10)}.json`;
+            // Detached anchors are ignored by some engines, and revoking the
+            // URL right after click() cancels the download.
+            a.style.display = 'none';
+            document.body.appendChild(a);
             a.click();
-            URL.revokeObjectURL(a.href);
+            setTimeout(() => {
+              a.remove();
+              URL.revokeObjectURL(url);
+            }, 1000);
           })
           .catch(() => {})
           .finally(() => setExporting(false));
@@ -1500,27 +1566,43 @@ window.__ModuleLoader__.load({
       const [learnerId, setLearnerId] = useState('default');
       const [profile, setProfile] = useState(null);
       const [status, setStatus] = useState(null);
+      // Strengths are edited as free text and only split on save: deriving the
+      // input value from the parsed array made every comma disappear instantly.
+      const [strengthsText, setStrengthsText] = useState('');
 
       useEffect(() => {
+        let alive = true;
         api('analysis').then((d) => {
+          if (!alive) return;
           const ids = (d.learners ?? []).map((l) => l.learnerId);
           setLearners(ids.length ? ids : ['default']);
-        }).catch(() => setLearners(['default']));
+        }).catch(() => { if (alive) setLearners(['default']); });
+        return () => { alive = false; };
       }, []);
       useEffect(() => {
+        let alive = true;
         setProfile(null);
-        api(`profile?learnerId=${encodeURIComponent(learnerId)}`).then(setProfile).catch(() => setProfile(null));
+        api(`profile?learnerId=${encodeURIComponent(learnerId)}`)
+          .then((p) => {
+            if (!alive) return;
+            setProfile(p);
+            setStrengthsText((p.strengths ?? []).join(', '));
+          })
+          .catch(() => { if (alive) setProfile(null); });
+        return () => { alive = false; };
       }, [learnerId]);
 
       const save = () => {
+        if (!profile) return;
         setStatus(null);
+        const strengths = strengthsText.split(/[,，、]/).map((s) => s.trim()).filter(Boolean);
         api('profile', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             learnerId,
             background: profile.background,
-            strengths: profile.strengths,
+            strengths,
             strengthsMode: 'replace',
             preferences: profile.preferences,
           }),
@@ -1548,8 +1630,8 @@ window.__ModuleLoader__.load({
               }),
               h('label', { style: labelStyle }, t('profileStrengths')),
               h('input', {
-                value: (profile.strengths ?? []).join(', '), style: inputStyle,
-                onChange: (e) => setProfile({ ...profile, strengths: e.target.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean) }),
+                value: strengthsText, style: inputStyle,
+                onChange: (e) => setStrengthsText(e.target.value),
               }),
               h('div', { style: { display: 'flex', gap: 12 } },
                 h('div', { style: { flex: 1 } },
@@ -1721,12 +1803,54 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // ---- error boundary ---------------------------------------------------------
+    // Without one, any render-time throw (a malformed course, a bad tool result)
+    // unmounted the entire host slot, leaving a blank panel with no way back.
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+      componentDidCatch(error, info) {
+        try { console.error('[learn-expert] render failed', error, info?.componentStack); } catch { /* ignore */ }
+      }
+      render() {
+        if (!this.state.error) return this.props.children;
+        return h('div', {
+          style: {
+            margin: 12, padding: '12px 14px', borderRadius: 10,
+            border: `1px solid ${TOKEN.error ?? '#c0392b'}66`, background: TOKEN.surface,
+            color: TOKEN.text, fontSize: 12, maxWidth: 560,
+          },
+        },
+          h('div', { style: { fontWeight: 600, marginBottom: 6 } }, `⚠️ ${this.props.title ?? ''}`),
+          h('div', { style: { color: TOKEN.text2, marginBottom: 8, wordBreak: 'break-word' } },
+            String(this.state.error?.message ?? this.state.error)),
+          h('button', {
+            onClick: () => this.setState({ error: null }),
+            style: {
+              cursor: 'pointer', fontSize: 12, padding: '4px 12px', borderRadius: 6,
+              border: `1px solid ${TOKEN.border}`, background: 'transparent', color: TOKEN.text,
+            },
+          }, this.props.retryLabel ?? '↻'),
+        );
+      }
+    }
+
     // ---- registration ------------------------------------------------------
     return {
       inject: ['slots'],
       apply(ctx) {
         const i18n = createI18n(ctx.get('locale'));
-        const withT = (Component) => (props) => h(Component, { ...props, t: i18n.t });
+        // Subscribe to locale changes: the previous version captured i18n.t once,
+        // so tool cards kept rendering in the language that was active at load.
+        const withT = (Component) => function WithT(props) {
+          const t = useT(i18n);
+          return h(Component, { ...props, t });
+        };
 
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist', id: 'dsh-learn-expert', order: 60, label: () => i18n.t('title'),
@@ -1734,20 +1858,27 @@ window.__ModuleLoader__.load({
 
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main', key: 'dsh-learn-expert',
-        }, () => h(LearnPanel, { i18n, navCtx: ctx })));
+        }, () => h(ErrorBoundary, { title: i18n.t('crashed'), retryLabel: i18n.t('retry') },
+          h(LearnPanel, { i18n, navCtx: ctx }))));
 
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: 'dsh-learn-expert',
         }, (props) => (props?.view === 'summary'
           ? h('span', null, i18n.t('profileTitle'))
-          : h(ProfileCard, { i18n }))));
+          : h(ErrorBoundary, { title: i18n.t('crashed'), retryLabel: i18n.t('retry') },
+              h(ProfileCard, { i18n })))));
 
+        const wrapCard = (Component) => withT((props) => h(
+          ErrorBoundary,
+          { title: i18n.t('crashed'), retryLabel: i18n.t('retry') },
+          h(Component, props),
+        ));
         ctx.slots.inject('tool.call.toolview', () => [
-          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_assess_mastery' }, withT(MasteryCard)),
-          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_create_roadmap' }, withT(RoadmapCard)),
-          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_update_roadmap' }, withT(RoadmapCard)),
-          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_submit_answer' }, withT(AnswerCard)),
-          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_review_due' }, withT(ReviewDueCard)),
+          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_assess_mastery' }, wrapCard(MasteryCard)),
+          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_create_roadmap' }, wrapCard(RoadmapCard)),
+          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_update_roadmap' }, wrapCard(RoadmapCard)),
+          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_submit_answer' }, wrapCard(AnswerCard)),
+          ctx.slots.register({ name: 'tool.call.toolview', key: 'ai_learn_review_due' }, wrapCard(ReviewDueCard)),
         ]);
       },
     };
