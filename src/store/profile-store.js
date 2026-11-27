@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { readJson, writeJson } from './json-file.js';
+import { withLock } from './lock.js';
 
 export const ERROR_CAUSES = [
   'concept-confusion',
@@ -28,12 +29,34 @@ export function emptyProfile() {
  */
 export class ProfileStore {
   constructor(dataDir) {
+    this.dataDir = dataDir;
     this.path = join(dataDir, 'profile.json');
   }
 
+  /**
+   * Read the profile, normalising every field.
+   *
+   * Root cause of "the profile panel throws on some learners": `update()` spread
+   * `current.strengths`/`current.errorPatterns`/`current.courseHistory` without
+   * checking they exist, so any hand-edited or older `profile.json` that lacks
+   * one of those keys crashed with `undefined is not iterable`.
+   */
   async get() {
-    const profile = await readJson(this.path, null);
-    return profile ?? emptyProfile();
+    const stored = await readJson(this.path, null);
+    if (!stored || typeof stored !== 'object') return emptyProfile();
+    const base = emptyProfile();
+    return {
+      ...base,
+      ...stored,
+      strengths: Array.isArray(stored.strengths) ? stored.strengths.filter((s) => typeof s === 'string') : [],
+      errorPatterns: stored.errorPatterns && typeof stored.errorPatterns === 'object' && !Array.isArray(stored.errorPatterns)
+        ? stored.errorPatterns
+        : {},
+      preferences: stored.preferences && typeof stored.preferences === 'object' && !Array.isArray(stored.preferences)
+        ? stored.preferences
+        : {},
+      courseHistory: Array.isArray(stored.courseHistory) ? stored.courseHistory : [],
+    };
   }
 
   async save(profile) {
@@ -48,9 +71,13 @@ export class ProfileStore {
    * - errorPatterns: counts are ADDED to existing counts
    * - preferences: shallow-merged
    * - courseHistory: appended
+   *
+   * Serialised with `withLock` so two sessions importing/recording at once
+   * cannot lose each other's counters (read-modify-write on one file).
    */
   async update(patch = {}) {
-    const current = await this.get();
+    return withLock(this.dataDir, async () => {
+      const current = await this.get();
     const next = { ...current };
     if (typeof patch.background === 'string') next.background = patch.background;
     if (Array.isArray(patch.strengths)) {
@@ -77,6 +104,7 @@ export class ProfileStore {
       next.courseHistory = [...current.courseHistory, ...patch.courseHistory];
     }
     return this.save(next);
+    });
   }
 
   /** Increment one error-cause counter (used when a checkpoint answer fails). */

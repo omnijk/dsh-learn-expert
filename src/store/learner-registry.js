@@ -1,6 +1,7 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { readJson, writeJson } from './json-file.js';
+import { canonicalRoot, normalizeRoot } from './paths.js';
 import { ProfileStore } from './profile-store.js';
 import { ProgressStore } from './progress-store.js';
 import { ReviewQueue } from './review-queue.js';
@@ -75,33 +76,60 @@ function assertSafeRelative(path) {
  * `learn-default/` on first access.
  */
 export class LearnerRegistry {
-  constructor({ fallbackRoot, workingDirectory = null, masteryThreshold = 80, masteryWeights } = {}) {
+  constructor({ fallbackRoot, workingDirectory = null, resolveWorkingDirectory = null, masteryThreshold = 80, masteryWeights } = {}) {
     if (!fallbackRoot) throw new Error('LearnerRegistry requires fallbackRoot');
-    this.fallbackRoot = fallbackRoot;
+    this.fallbackRoot = normalizeRoot(fallbackRoot) || fallbackRoot;
     this.workingDirectory = workingDirectory;
+    // Lazy resolver: called per tool execution, so a service that registers
+    // *after* the plugin's apply() (the cold-start race) is still usable.
+    this.resolveWorkingDirectory = resolveWorkingDirectory;
     this.masteryThreshold = masteryThreshold;
     this.masteryWeights = masteryWeights;
     this.cache = new Map(); // learnerDir -> { profileStore, progressStore, reviewQueue }
     this.migrated = new Set(); // roots already checked for the legacy flat layout
-    this.rootsSeen = new Set(); // every root a tool call resolved to (for cross-root aggregation)
+    // canonicalRoot -> real root. Every root a tool call resolved to, so the
+    // panel can aggregate across workspace roots.
+    this.roots = new Map();
+  }
+
+  /**
+   * The session workspace for one tool execution, or null when unavailable.
+   *
+   * Root cause of "data landed in $DSH_HOME instead of the workspace": the
+   * workingDirectory service used to be captured once in apply() (`ctx.get`),
+   * which happens before services are ready on a cold start — so every call saw
+   * `null` and fell back forever. The resolver reads the service per call.
+   */
+  async sessionWorkspace(agent, signal) {
+    if (!agent) return null;
+    const resolvers = [];
+    if (typeof this.resolveWorkingDirectory === 'function') {
+      resolvers.push(() => this.resolveWorkingDirectory(agent, signal));
+    }
+    if (this.workingDirectory && typeof this.workingDirectory.ensure === 'function') {
+      resolvers.push(() => this.workingDirectory.ensure(agent, signal));
+    }
+    for (const resolveOnce of resolvers) {
+      try {
+        const dir = await resolveOnce();
+        if (typeof dir === 'string' && dir.trim()) return dir;
+      } catch {
+        // workspace unavailable (remote fs, disposed agent): try the next one
+      }
+    }
+    return null;
   }
 
   /**
    * Storage root for this call: `<session workspace>/dsh-learn` when the tool
-   * execution carries an agent and the workingDirectory service resolves,
-   * otherwise the configured fallback root.
+   * execution carries an agent and the workspace resolves, otherwise the
+   * configured fallback root.
    */
   async root(exec) {
-    const agent = exec?.agent;
-    if (this.workingDirectory && agent) {
-      try {
-        const dir = await this.workingDirectory.ensure(agent, exec?.signal);
-        if (typeof dir === 'string' && dir.trim()) return join(dir, 'dsh-learn');
-      } catch {
-        // workspace unavailable (remote fs, disposed agent): keep the fallback
-      }
-    }
-    return this.fallbackRoot;
+    const workspace = await this.sessionWorkspace(exec?.agent, exec?.signal);
+    const root = normalizeRoot(workspace ? join(workspace, 'dsh-learn') : this.fallbackRoot);
+    this.roots.set(canonicalRoot(root), root);
+    return root;
   }
 
   /** Move a legacy flat layout at `root` into `learn-default/`, once per root. */
@@ -119,10 +147,16 @@ export class LearnerRegistry {
     } catch { /* missing */ }
     if (!hasLegacy) return;
     const target = join(root, `${LEARNER_PREFIX}default`);
+    let targetEntries = [];
     try {
-      await stat(target);
-      return; // a default learner already exists; leave legacy files untouched
-    } catch { /* does not exist yet */ }
+      if (!(await stat(target)).isDirectory()) return;
+      targetEntries = await readdir(target);
+    } catch {
+      // does not exist yet: create it below
+    }
+    // An *empty* learn-default (created by a first read before migration ran)
+    // used to abort the migration and hide the learner's old data forever.
+    if (targetEntries.length > 0) return;
     await mkdir(target, { recursive: true });
     for (const name of LEGACY_ENTRIES) {
       try {
@@ -138,7 +172,6 @@ export class LearnerRegistry {
   /** Stores for one learner, creating and caching them per directory. */
   async stores(exec, learnerId) {
     const root = await this.root(exec);
-    this.rootsSeen.add(root);
     await this.migrateLegacy(root);
     const id = slugLearnerId(learnerId);
     const dir = this.learnerDir(root, id);
@@ -247,13 +280,30 @@ export class LearnerRegistry {
    * Aggregate every known root (the fallback root plus every workspace root a
    * tool call touched) so the Web panel sees learning data regardless of which
    * session workspace produced it.
+   *
+   * Roots are de-duplicated by `canonicalRoot`: the same folder reached with a
+   * different casing or a trailing separator used to be scanned twice, which
+   * doubled every course and every due count in the panel.
    */
   async aggregate(exec) {
-    const roots = [...new Set([await this.root(exec), ...this.rootsSeen])];
-    const merged = { roots, learners: [], roadmaps: [], reviewItems: [], diagnoses: [] };
-    for (const root of roots) {
+    const current = await this.root(exec);
+    const byKey = new Map();
+    byKey.set(canonicalRoot(this.fallbackRoot), this.fallbackRoot);
+    for (const [key, value] of this.roots) byKey.set(key, value);
+    byKey.set(canonicalRoot(current), current);
+    byKey.delete(canonicalRoot(this.fallbackRoot));
+    byKey.delete(canonicalRoot(current));
+    const ordered = [this.fallbackRoot, current, ...byKey.values()];
+    const merged = { roots: ordered, learners: [], roadmaps: [], reviewItems: [], diagnoses: [] };
+    const seenLearnerDirs = new Set();
+    for (const root of ordered) {
       const part = await this.aggregateRoot(root);
-      merged.learners.push(...part.learners);
+      for (const learner of part.learners) {
+        const key = canonicalRoot(learner.dir);
+        if (seenLearnerDirs.has(key)) continue;
+        seenLearnerDirs.add(key);
+        merged.learners.push(learner);
+      }
       merged.roadmaps.push(...part.roadmaps);
       merged.reviewItems.push(...part.reviewItems);
       merged.diagnoses.push(...part.diagnoses);
@@ -329,12 +379,35 @@ export class LearnerRegistry {
         throw new Error(`bundle file ${JSON.stringify(file.path)} has non-text data`);
       }
     }
-    for (const file of bundle.files) {
-      const target = resolve(dir, file.path);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, file.data, 'utf8');
+    // Stage the merged result next to the learner folder, then swap it in.
+    // Root cause of "an interrupted import left a half-written learner": the
+    // bundle was written file-by-file straight into the live folder, so a crash
+    // (or a full disk) left a mixture of old and new roadmaps that the panel
+    // then showed as truth. The swap keeps the previous folder as a backup.
+    const staging = join(dirname(dir), `.import-${id}-${Date.now()}`);
+    let backup = null;
+    try {
+      await mkdir(staging, { recursive: true });
+      for (const file of existing) {
+        const target = resolve(staging, file.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, file.data, 'utf8');
+      }
+      for (const file of bundle.files) {
+        const target = resolve(staging, file.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, file.data, 'utf8');
+      }
+      if (existing.length > 0) {
+        backup = `${dir}.backup-${timestamp()}`;
+        await rename(dir, backup);
+      }
+      await rename(staging, dir);
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true }).catch(() => {});
+      throw error;
     }
     this.cache.delete(dir); // force fresh stores so imported data is picked up
-    return { learnerId: id, dir, imported: bundle.files.length, overwritten: existing.length > 0 };
+    return { learnerId: id, dir, imported: bundle.files.length, overwritten: existing.length > 0, backup };
   }
 }

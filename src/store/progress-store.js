@@ -1,17 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   allMastered,
   assertInsertable,
   findNode,
   firstUnmastered,
-  nextNode,
   topoSort,
   validateNodeSpecs,
 } from '../core/concept-graph.js';
 import { transition } from '../core/state-machine.js';
 import { readJson, writeJson } from './json-file.js';
+import { withLock } from './lock.js';
+import { assertSafeId } from './paths.js';
 
 function slugify(text) {
   const slug = String(text)
@@ -20,6 +21,24 @@ function slugify(text) {
     .replace(/^-+|-+$/g, '')
     .slice(0, 40);
   return slug || 'course';
+}
+
+/**
+ * Strict boolean coercion for `passed`.
+ *
+ * Root cause of "a failed answer recorded as passed": `Boolean(passed)` maps
+ * every non-empty string to true, so a model that sent the string "false"
+ * advanced the course. Accept real booleans and the two obvious string forms;
+ * reject anything else instead of guessing.
+ */
+function toPassed(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (text === 'true') return true;
+    if (text === 'false') return false;
+  }
+  throw new Error(`passed must be a boolean (got ${JSON.stringify(value)})`);
 }
 
 /**
@@ -39,7 +58,12 @@ export class ProgressStore {
   }
 
   roadmapPath(id) {
-    return join(this.roadmapsDir, `${id}.json`);
+    return join(this.roadmapsDir, `${assertSafeId(id, 'roadmapId')}.json`);
+  }
+
+  /** Run `fn` holding the per-data-dir write lock (read-modify-write safety). */
+  mutate(fn) {
+    return withLock(this.dataDir, fn);
   }
 
   async getRoadmap(id) {
@@ -83,6 +107,25 @@ export class ProgressStore {
       if (roadmap.nodes.some((n) => n.id === nodeId)) return roadmap;
     }
     throw new Error(`no roadmap contains node "${nodeId}"`);
+  }
+
+  /**
+   * Mark a mastered node as needing re-teaching after a failed review.
+   *
+   * Runs under the write lock: the review path used to read the roadmap, mutate
+   * it and save it back outside any lock, so a concurrent write could be lost.
+   */
+  async flagRelearn(nodeId, roadmapId) {
+    return this.mutate(async () => {
+      const roadmap = await this.findRoadmapByNode(nodeId, roadmapId);
+      const node = findNode(roadmap, nodeId);
+      if (node.status !== 'mastered') return { roadmap, node, relearn: false };
+      node.status = 'needs-relearn';
+      roadmap.currentNodeId = node.id;
+      if (roadmap.state === 'COMPLETED') roadmap.state = 'TEACHING';
+      const saved = await this.saveRoadmap(roadmap);
+      return { roadmap: saved, node, relearn: true };
+    });
   }
 
   // ---- diagnosis -------------------------------------------------------
@@ -178,6 +221,7 @@ export class ProgressStore {
 
   /** insertNode / skipNode (plan M2 dynamic adjustment). */
   async updateRoadmap(roadmapId, op, payload = {}) {
+    return this.mutate(async () => {
     const roadmap = await this.getRoadmap(roadmapId);
     if (op === 'insertNode') {
       const spec = payload.node;
@@ -223,20 +267,39 @@ export class ProgressStore {
       throw new Error(`unknown roadmap op "${op}"; expected "insertNode" or "skipNode"`);
     }
     return this.saveRoadmap(roadmap);
+    });
   }
 
   isMastered(roadmap, nodeId) {
     return roadmap.nodes.find((n) => n.id === nodeId)?.status === 'mastered';
   }
 
-  /** After `nodeId` completes: activate the next unmastered node, or complete. */
+  /**
+   * Next node to teach after `nodeId` completed.
+   *
+   * Root cause of the "unlock order breaks after insertNode/skipNode" bug:
+   * `advance()` used the array position (`nextNode`/`firstUnmastered`), so any
+   * edit that changed the array order — or a roadmap whose declared
+   * prerequisites differ from alphabetical order — activated a node the learner
+   * was not ready for. Selection is now driven by `prerequisites`, with array
+   * order only as the tie-breaker.
+   */
+  nextReadyNode(roadmap, nodeId) {
+    const ready = (roadmap.nodes ?? []).filter((n) => {
+      if (!n || n.id === nodeId) return false;
+      if (n.status === 'mastered' || n.status === 'active') return false;
+      return (n.prerequisites ?? []).every((p) => this.isMastered(roadmap, p));
+    });
+    if (ready.length === 0) return null;
+    const successor = ready.find((n) => (n.prerequisites ?? []).includes(nodeId));
+    return successor ?? ready.find((n) => n.status === 'locked') ?? ready[0];
+  }
+
+  /** After `nodeId` completes: activate the next ready node, or complete. */
   advance(roadmap, nodeId) {
     if (roadmap.currentNodeId === nodeId) {
-      const next = nextNode(roadmap, nodeId);
-      const target = next && next.status !== 'mastered'
-        ? next
-        : firstUnmastered(roadmap);
-      if (target) {
+      const target = this.nextReadyNode(roadmap, nodeId) ?? firstUnmastered(roadmap);
+      if (target && target.status !== 'mastered') {
         if (target.status === 'locked') target.status = 'active';
         roadmap.currentNodeId = target.id;
       } else {
@@ -278,8 +341,28 @@ export class ProgressStore {
     if (typeof rationale !== 'string' || !rationale.trim()) {
       throw new Error('rationale is required and must quote the learner\u2019s own words');
     }
+    return this.mutate(async () => {
     const roadmap = await this.getRoadmap(roadmapId);
     const node = findNode(roadmap, nodeId);
+    // Root cause of "a locked node can be marked mastered": the store trusted
+    // the caller's node id and never checked where the learner actually is, so
+    // a model that passed the wrong node advanced the course out of order.
+    // Assess only the node being taught, or one that was already mastered.
+    if (node.status === 'locked') {
+      throw new Error(`node "${nodeId}" is still locked; teach it before assessing mastery`);
+    }
+    if (node.status !== 'mastered' && roadmap.currentNodeId && roadmap.currentNodeId !== nodeId) {
+      throw new Error(
+        `node "${nodeId}" is not the current node ("${roadmap.currentNodeId}"); ` +
+        'assess the node the learner is on, or skipNode it first',
+      );
+    }
+    const unmet = (node.prerequisites ?? []).filter((p) => !this.isMastered(roadmap, p));
+    if (unmet.length > 0 && (scores.accuracy + scores.depth + scores.transfer + scores.discrimination) / 4 >= this.masteryThreshold) {
+      throw new Error(
+        `node "${nodeId}" cannot be mastered before its prerequisites: ${unmet.join(', ')}`,
+      );
+    }
     const mastery = {
       accuracy: scores.accuracy,
       depth: scores.depth,
@@ -317,6 +400,7 @@ export class ProgressStore {
       nextNodeId: roadmap.currentNodeId,
       courseCompleted: roadmap.state === 'COMPLETED',
     };
+    });
   }
 
   // ---- checkpoint --------------------------------------------------------
@@ -325,6 +409,7 @@ export class ProgressStore {
     if (!Array.isArray(questions) || questions.length === 0) {
       throw new Error('questions must be a non-empty array');
     }
+    return this.mutate(async () => {
     const roadmap = await this.getRoadmap(roadmapId);
     const node = findNode(roadmap, nodeId);
     const stamped = questions.map((q, i) => {
@@ -343,6 +428,7 @@ export class ProgressStore {
     }
     await this.saveRoadmap(roadmap);
     return { roadmap, questions: stamped };
+    });
   }
 
   /**
@@ -350,6 +436,8 @@ export class ProgressStore {
    * Two consecutive failures on the same node request re-teaching (plan M5).
    */
   async recordAnswer(roadmapId, nodeId, { questionId, answer, passed, cause, feedback }) {
+    const ok = toPassed(passed);
+    return this.mutate(async () => {
     const roadmap = await this.getRoadmap(roadmapId);
     const node = findNode(roadmap, nodeId);
     if (!node.checkpoint) throw new Error(`node "${nodeId}" has no checkpoint yet; call ai_learn_checkpoint first`);
@@ -359,8 +447,8 @@ export class ProgressStore {
     node.checkpoint.attempts.push({
       questionId,
       answer,
-      passed: Boolean(passed),
-      cause: passed ? undefined : cause,
+      passed: ok,
+      cause: ok ? undefined : cause,
       feedback,
       at: Date.now(),
     });
@@ -373,13 +461,14 @@ export class ProgressStore {
     const remediate = consecutiveFails >= 2;
     if (remediate) {
       roadmap.state = 'REMEDIATING';
-    } else if (!passed) {
+    } else if (!ok) {
       roadmap.state = 'QUESTIONING';
     } else if (roadmap.state === 'CHECKPOINT' || roadmap.state === 'QUESTIONING') {
       roadmap.state = 'TEACHING';
     }
     await this.saveRoadmap(roadmap);
-    return { roadmap, passed: Boolean(passed), consecutiveFails, remediate };
+    return { roadmap, passed: ok, consecutiveFails, remediate };
+    });
   }
 
   // ---- notes --------------------------------------------------------------
@@ -395,6 +484,9 @@ export class ProgressStore {
     if (!Array.isArray(learnerQuotes) || learnerQuotes.length === 0 || learnerQuotes.some((q) => typeof q !== 'string' || !q.trim())) {
       throw new Error('learnerQuotes must contain at least one non-empty quote from the learner');
     }
+    assertSafeId(roadmapId, 'roadmapId');
+    assertSafeId(nodeId, 'nodeId');
+    return this.mutate(async () => {
     const roadmap = await this.getRoadmap(roadmapId);
     const node = findNode(roadmap, nodeId);
     const dir = join(this.notesDir, roadmapId);
@@ -412,9 +504,16 @@ export class ProgressStore {
       content.trim(),
       '',
     ].join('\n');
-    await writeFile(path, doc, 'utf8');
-    node.notePath = path;
+    // Atomic write: a half-written note is worse than no note (the 课堂 panel
+    // treats a non-empty file as "has note" and shows truncated content).
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, doc, 'utf8');
+    await rename(tmp, path);
+    // Store the path relative to the learner folder: absolute paths leaked the
+    // machine's directory layout into exported bundles and broke after a move.
+    node.notePath = join('notes', roadmapId, `${nodeId}.md`);
     await this.saveRoadmap(roadmap);
     return { path, node };
+    });
   }
 }
