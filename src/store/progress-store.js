@@ -351,6 +351,14 @@ export class ProgressStore {
     if (node.status === 'locked') {
       throw new Error(`node "${nodeId}" is still locked; teach it before assessing mastery`);
     }
+    // A mastered node could be re-scored at any time and silently downgraded by
+    // a stray call. Re-teaching is signalled explicitly by a failed review
+    // (flagRelearn) which moves the node to needs-relearn first.
+    if (node.status === 'mastered') {
+      throw new Error(
+        `node "${nodeId}" is already mastered; record a failed review to send it back to relearning`,
+      );
+    }
     if (node.status !== 'mastered' && roadmap.currentNodeId && roadmap.currentNodeId !== nodeId) {
       throw new Error(
         `node "${nodeId}" is not the current node ("${roadmap.currentNodeId}"); ` +
@@ -463,6 +471,10 @@ export class ProgressStore {
       roadmap.state = 'REMEDIATING';
     } else if (!ok) {
       roadmap.state = 'QUESTIONING';
+    } else if (roadmap.state === 'REMEDIATING') {
+      // A correct answer ends the re-teach loop; without this the course stayed
+      // in REMEDIATING forever after two failures, even once the learner got it.
+      roadmap.state = 'TEACHING';
     } else if (roadmap.state === 'CHECKPOINT' || roadmap.state === 'QUESTIONING') {
       roadmap.state = 'TEACHING';
     }
