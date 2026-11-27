@@ -67,6 +67,29 @@ window.__ModuleLoader__.load({
         cardAnswerPass: '回答通过 ✓', cardAnswerFail: '未通过', cardRemediateWarn: '连续失败，需要重讲',
         cardReviewDue: '{n} 个到期复习项', cardNoReview: '暂无到期复习',
         cardPending: '进行中…',
+        // 课堂 (course list + detail)
+        panelTitle: '学习私教',
+        tabCourses: '课堂', tabAnalysis: '分析',
+        courseAll: '全部', courseFav: '收藏', courseLearning: '在学', courseReview: '待复习',
+        courseDone: '已学完', courseShelf: '书房',
+        courseSearch: '搜索课程或知识点',
+        askTutor: '随手问', askTutorNoSession: '该课程还没有关联的对话',
+        menuRename: '重命名', menuMove: '移动到分组', menuLock: '锁定', menuUnlock: '解锁',
+        menuDelete: '删除', menuCancel: '取消',
+        renamePrompt: '新的课程名称', groupPrompt: '分组名称（留空则移出书房）',
+        deleteConfirm: '删除课程「{t}」？将同时删除路线图、笔记和复习队列，不可恢复。',
+        journey: '学习旅程', reviewTab: '复习巩固',
+        masteredLine: '{m} / {n} 个知识点已掌握',
+        nodeNote: '笔记', nodeMap: '导图', nodeScratch: '手记',
+        noteEmpty: '这一节还没有笔记', scratchPlaceholder: '用你自己的话记下这一节的理解和疑问…',
+        scratchSave: '保存手记', scratchSaved: '已保存', scratchFailed: '保存失败',
+        activeNode: '正在学：{t}',
+        reviewEmpty: '这门课暂无到期复习项', reviewAllEmpty: '全部复习项都还未到期',
+        goReview: '去复习', reviewNext: '下次复习 {d}',
+        backToList: '返回课堂',
+        courseEmptyTitle: '还没有课程', courseEmptyBody: '回到对话，对私教说「我想学 ……」开课。',
+        courseLockedTip: '已锁定', favAdd: '收藏', favRemove: '取消收藏',
+        mapTitle: '知识导图',
       },
       en: {
         title: 'Learning analysis', refresh: 'Refresh', export: 'Export data',
@@ -104,6 +127,29 @@ window.__ModuleLoader__.load({
         cardAnswerPass: 'Answer passed ✓', cardAnswerFail: 'failed', cardRemediateWarn: 'repeated failures; re-teach',
         cardReviewDue: '{n} reviews due', cardNoReview: 'no reviews due',
         cardPending: 'in progress…',
+        // Classroom (course list + detail)
+        panelTitle: 'AI Tutor',
+        tabCourses: 'Courses', tabAnalysis: 'Analysis',
+        courseAll: 'All', courseFav: 'Favorites', courseLearning: 'Learning', courseReview: 'To review',
+        courseDone: 'Done', courseShelf: 'Shelf',
+        courseSearch: 'Search courses or concepts',
+        askTutor: 'Ask now', askTutorNoSession: 'This course has no linked conversation yet',
+        menuRename: 'Rename', menuMove: 'Move to group', menuLock: 'Lock', menuUnlock: 'Unlock',
+        menuDelete: 'Delete', menuCancel: 'Cancel',
+        renamePrompt: 'New course name', groupPrompt: 'Group name (empty removes from shelf)',
+        deleteConfirm: 'Delete course "{t}"? Its roadmap, notes and review queue will be removed permanently.',
+        journey: 'Journey', reviewTab: 'Review',
+        masteredLine: '{m} / {n} concepts mastered',
+        nodeNote: 'Notes', nodeMap: 'Map', nodeScratch: 'My notes',
+        noteEmpty: 'No notes for this section yet', scratchPlaceholder: 'Write down your own understanding and questions…',
+        scratchSave: 'Save', scratchSaved: 'Saved', scratchFailed: 'Save failed',
+        activeNode: 'Learning: {t}',
+        reviewEmpty: 'No reviews due for this course', reviewAllEmpty: 'Nothing is due yet',
+        goReview: 'Review now', reviewNext: 'next review {d}',
+        backToList: 'Back to courses',
+        courseEmptyTitle: 'No courses yet', courseEmptyBody: 'Go back to the chat and tell the tutor "I want to learn …".',
+        courseLockedTip: 'Locked', favAdd: 'Favorite', favRemove: 'Unfavorite',
+        mapTitle: 'Concept map',
       },
     };
     // depth/transfer/discrimination share keys with tool meta fields
@@ -439,8 +485,491 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // ---- 课堂: course list & detail (v3) ----------------------------------------
+    function IconBtn({ title, onClick, children, danger }) {
+      const [hover, setHover] = useState(false);
+      return h('button', {
+        title, onClick,
+        onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false),
+        style: {
+          cursor: 'pointer', border: 'none', borderRadius: 6, padding: '4px 6px',
+          fontSize: 13, lineHeight: 1, background: hover ? TOKEN.surface2 : 'transparent',
+          color: danger && hover ? TOKEN.error : TOKEN.text2,
+        },
+      }, children);
+    }
+
+    /** One rounded segment per node, colored by status (screenshot-style). */
+    function SegmentedProgress({ nodes }) {
+      return h('div', { style: { display: 'flex', gap: 4, marginTop: 10 } },
+        nodes.map((n) => h('div', {
+          key: n.id,
+          title: `${n.title} · ${n.status}`,
+          style: {
+            flex: 1, height: 6, borderRadius: 3,
+            background: STATUS_COLOR[n.status] ?? TOKEN.idle,
+            opacity: n.status === 'locked' ? 0.35 : 1,
+          },
+        })),
+      );
+    }
+
+    /** "⋯" dropdown menu that closes on outside click. */
+    function KebabMenu({ items }) {
+      const [open, setOpen] = useState(false);
+      useEffect(() => {
+        if (!open) return undefined;
+        const close = () => setOpen(false);
+        document.addEventListener('click', close);
+        return () => document.removeEventListener('click', close);
+      }, [open]);
+      return h('span', {
+        style: { position: 'relative', display: 'inline-block' },
+        onClick: (e) => e.stopPropagation(),
+      },
+        h(IconBtn, {
+          title: '…',
+          onClick: (e) => { e.stopPropagation(); setOpen(!open); },
+        }, '⋯'),
+        open ? h('div', {
+          style: {
+            position: 'absolute', right: 0, top: '100%', zIndex: 30, minWidth: 140,
+            background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 8,
+            boxShadow: '0 6px 24px rgba(0,0,0,.18)', padding: 4,
+          },
+        }, items.filter(Boolean).map((item, i) => h('button', {
+          key: i,
+          onClick: (e) => { e.stopPropagation(); setOpen(false); item.onClick(); },
+          style: {
+            display: 'flex', width: '100%', boxSizing: 'border-box', textAlign: 'left',
+            gap: 8, alignItems: 'center', cursor: 'pointer', border: 'none',
+            background: 'transparent', padding: '7px 10px', borderRadius: 6,
+            fontSize: 12, color: item.danger ? TOKEN.error : TOKEN.text,
+            borderTop: item.separator ? `1px solid ${TOKEN.border}` : 'none',
+          },
+          onMouseEnter: (e) => { e.currentTarget.style.background = TOKEN.surface2; },
+          onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent'; },
+        }, item.label))) : null,
+      );
+    }
+
+    const STAR = (filled) => filled ? '★' : '☆';
+
+    function CourseCard({ course: c, t, onOpen, onMutate, onDelete, onAsk }) {
+      const [hover, setHover] = useState(false);
+      const pct = c.nodeCount ? Math.round((c.masteredCount / c.nodeCount) * 100) : 0;
+      const done = c.masteredCount === c.nodeCount && c.nodeCount > 0;
+      return h('div', {
+        onMouseEnter: () => setHover(true), onMouseLeave: () => setHover(false),
+        onClick: () => onOpen(c),
+        style: {
+          position: 'relative', cursor: 'pointer',
+          background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 12,
+          padding: '14px 16px', opacity: c.meta.locked ? 0.75 : 1,
+          transition: 'border-color .15s, box-shadow .15s',
+          borderColor: hover ? TOKEN.brand : TOKEN.border,
+          boxShadow: hover ? '0 2px 12px rgba(0,0,0,.08)' : 'none',
+        },
+      },
+        h('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 } },
+          h('div', { style: { fontSize: 14, fontWeight: 600, flex: 1, minWidth: 0, lineHeight: 1.4 } },
+            c.meta.alias ?? c.topic,
+            c.meta.locked ? h('span', { title: t('courseLockedTip'), style: { marginLeft: 6, fontSize: 11 } }, '🔒') : null,
+            c.meta.group ? h('span', {
+              style: {
+                marginLeft: 8, fontSize: 11, fontWeight: 400, color: TOKEN.text2,
+                padding: '1px 8px', borderRadius: 999, border: `1px solid ${TOKEN.border}`,
+              },
+            }, c.meta.group) : null,
+          ),
+          h('span', {
+            style: { display: 'inline-flex', gap: 2, visibility: hover ? 'visible' : 'hidden', flexShrink: 0 },
+          },
+            h(IconBtn, {
+              title: c.meta.favorite ? t('favRemove') : t('favAdd'),
+              onClick: (e) => { e.stopPropagation(); onMutate(c, { favorite: !c.meta.favorite }); },
+            }, h('span', { style: { color: c.meta.favorite ? '#F5A623' : undefined } }, STAR(c.meta.favorite))),
+            h(KebabMenu, {
+              items: [
+                !c.meta.locked && { label: `✏️ ${t('menuRename')}`, onClick: () => onMutate(c, 'rename') },
+                !c.meta.locked && { label: `📂 ${t('menuMove')}`, onClick: () => onMutate(c, 'group') },
+                { label: c.meta.locked ? `🔓 ${t('menuUnlock')}` : `🔒 ${t('menuLock')}`, onClick: () => onMutate(c, { locked: !c.meta.locked }) },
+                !c.meta.locked && { label: `🗑 ${t('menuDelete')}`, danger: true, separator: true, onClick: () => onDelete(c) },
+              ],
+            }),
+          ),
+        ),
+        h('div', { style: { fontSize: 12, color: TOKEN.text2, marginTop: 4, minHeight: 16 } },
+          c.activeNode ? t('activeNode', { t: c.activeNode })
+            : done ? t(`state_COMPLETED`)
+            : t(`state_${c.state}`) ?? c.state,
+        ),
+        h(SegmentedProgress, { nodes: c.nodes }),
+        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 } },
+          h('span', { style: { fontSize: 12, color: TOKEN.text2 } },
+            `${t('masteredOf', { m: c.masteredCount, n: c.nodeCount })} · ${pct}%`,
+            c.dueCount > 0 ? h('span', { style: { color: TOKEN.warn, marginLeft: 8 } }, `⏰ ${t('cardReviewDue', { n: c.dueCount })}`) : null,
+          ),
+          h('button', {
+            onClick: (e) => { e.stopPropagation(); onAsk(c); },
+            style: {
+              cursor: 'pointer', fontSize: 12, padding: '3px 12px', borderRadius: 999,
+              border: `1px solid ${TOKEN.brand}`, background: 'transparent', color: TOKEN.brand,
+              visibility: hover ? 'visible' : 'hidden',
+            },
+          }, `💬 ${t('askTutor')}`),
+        ),
+      );
+    }
+
+    function CourseListView({ courses, t, onOpen, onMutate, onDelete, onAsk }) {
+      const [filter, setFilter] = useState('all');
+      const [query, setQuery] = useState('');
+      const counts = useMemo(() => ({
+        all: courses.length,
+        fav: courses.filter((c) => c.meta.favorite).length,
+        learning: courses.filter((c) => c.masteredCount < c.nodeCount).length,
+        review: courses.filter((c) => c.dueCount > 0).length,
+        done: courses.filter((c) => c.nodeCount > 0 && c.masteredCount === c.nodeCount).length,
+        shelf: courses.filter((c) => c.meta.group).length,
+      }), [courses]);
+      const visible = useMemo(() => {
+        let list = courses;
+        if (filter === 'fav') list = list.filter((c) => c.meta.favorite);
+        if (filter === 'learning') list = list.filter((c) => c.masteredCount < c.nodeCount);
+        if (filter === 'review') list = list.filter((c) => c.dueCount > 0);
+        if (filter === 'done') list = list.filter((c) => c.nodeCount > 0 && c.masteredCount === c.nodeCount);
+        if (filter === 'shelf') list = list.filter((c) => c.meta.group);
+        const q = query.trim().toLowerCase();
+        if (q) {
+          list = list.filter((c) =>
+            (c.meta.alias ?? c.topic).toLowerCase().includes(q) ||
+            c.nodes.some((n) => n.title.toLowerCase().includes(q)));
+        }
+        return list;
+      }, [courses, filter, query]);
+      const filters = [
+        ['all', 'courseAll'], ['fav', 'courseFav'], ['learning', 'courseLearning'],
+        ['review', 'courseReview'], ['done', 'courseDone'], ['shelf', 'courseShelf'],
+      ];
+      return h(React.Fragment, null,
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16, alignItems: 'center' } },
+          filters.map(([id, key]) => h(Chip, {
+            key: id, active: filter === id, onClick: () => setFilter(id),
+          }, `${t(key)} ${counts[id]}`)),
+          h('input', {
+            value: query, onChange: (e) => setQuery(e.target.value),
+            placeholder: `🔍 ${t('courseSearch')}`,
+            style: {
+              marginLeft: 'auto', fontSize: 12, padding: '5px 12px', borderRadius: 999,
+              border: `1px solid ${TOKEN.border}`, background: TOKEN.surface, color: TOKEN.text,
+              outline: 'none', width: 200,
+            },
+          }),
+        ),
+        visible.length === 0 ? h('div', {
+          style: {
+            marginTop: 24, padding: 24, borderRadius: 12, textAlign: 'center',
+            border: `1px dashed ${TOKEN.border}`, color: TOKEN.text2,
+          },
+        },
+          h('div', { style: { fontSize: 15, marginBottom: 8 } }, t('courseEmptyTitle')),
+          h('div', null, t('courseEmptyBody')),
+        ) : h('div', {
+          style: {
+            display: 'grid', marginTop: 16,
+            gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12,
+          },
+        }, visible.map((c) => h(CourseCard, {
+          key: c.key, course: c, t, onOpen, onMutate, onDelete, onAsk,
+        }))),
+      );
+    }
+
+    /** Inline expander under a node row: tutor note / mini DAG / user scratchpad. */
+    function NodePane({ course, node, kind, t, onSaved }) {
+      const [content, setContent] = useState(null);
+      const [draft, setDraft] = useState(null);
+      const [status, setStatus] = useState(null);
+      useEffect(() => {
+        setContent(null); setDraft(null); setStatus(null);
+        if (kind === 'map') return;
+        const q = `course/note?root=${encodeURIComponent(course.root)}&learnerId=${encodeURIComponent(course.learnerId)}` +
+          `&roadmapId=${encodeURIComponent(course.roadmapId)}&nodeId=${encodeURIComponent(node.id)}&kind=${kind === 'scratch' ? 'user' : 'tutor'}`;
+        api(q).then((d) => { setContent(d.content); setDraft(d.content); }).catch(() => setContent(''));
+      }, [course.key, node.id, kind]);
+      const save = () => {
+        setStatus(null);
+        api('course/note', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            root: course.root, learnerId: course.learnerId,
+            roadmapId: course.roadmapId, nodeId: node.id, content: draft ?? '',
+          }),
+        }).then(() => { setStatus('ok'); onSaved?.(); }).catch(() => setStatus('fail'));
+      };
+      const boxStyle = {
+        marginTop: 8, padding: '10px 12px', borderRadius: 8, fontSize: 12,
+        background: TOKEN.surface2, border: `1px solid ${TOKEN.border}`,
+      };
+      if (kind === 'map') {
+        return h('div', { style: boxStyle },
+          h('div', { style: { color: TOKEN.text2, marginBottom: 6 } }, `${t('mapTitle')} · ${course.topic}`),
+          h(DagChart, { plan: { nodes: course.nodes, dag: course.dag }, t }),
+        );
+      }
+      if (kind === 'note') {
+        return h('div', { style: boxStyle },
+          content === null ? t('loading')
+            : content ? h('pre', {
+                style: { margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', color: TOKEN.text },
+              }, content)
+            : h('span', { style: { color: TOKEN.text2 } }, t('noteEmpty')),
+        );
+      }
+      return h('div', { style: boxStyle },
+        h('textarea', {
+          value: draft ?? '', rows: 4, placeholder: t('scratchPlaceholder'),
+          onChange: (e) => setDraft(e.target.value),
+          style: {
+            width: '100%', boxSizing: 'border-box', fontSize: 12, padding: 8, borderRadius: 6,
+            border: `1px solid ${TOKEN.border}`, background: TOKEN.surface, color: TOKEN.text,
+            fontFamily: 'inherit', resize: 'vertical',
+          },
+        }),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 } },
+          h('button', {
+            onClick: save,
+            style: {
+              cursor: 'pointer', fontSize: 12, padding: '4px 14px', borderRadius: 6,
+              border: `1px solid ${TOKEN.brand}`, background: TOKEN.brand, color: '#fff',
+            },
+          }, t('scratchSave')),
+          status === 'ok' ? h('span', { style: { color: TOKEN.success } }, t('scratchSaved')) : null,
+          status === 'fail' ? h('span', { style: { color: TOKEN.error } }, t('scratchFailed')) : null,
+        ),
+      );
+    }
+
+    function NodeRow({ course, node, t, onSaved }) {
+      const [pane, setPane] = useState(null); // null | 'note' | 'map' | 'scratch'
+      const toggle = (kind) => setPane(pane === kind ? null : kind);
+      const color = STATUS_COLOR[node.status] ?? TOKEN.idle;
+      const pill = (kind, label, marked) => h('button', {
+        onClick: () => toggle(kind),
+        style: {
+          cursor: 'pointer', fontSize: 11, padding: '2px 10px', borderRadius: 999,
+          border: `1px solid ${pane === kind ? TOKEN.brand : TOKEN.border}`,
+          background: pane === kind ? 'color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, transparent)' : 'transparent',
+          color: TOKEN.text2,
+        },
+      }, `${label}${marked ? ' ·' : ''}`);
+      return h('div', {
+        style: {
+          background: TOKEN.surface, border: `1px solid ${TOKEN.border}`, borderRadius: 10,
+          padding: '10px 14px',
+        },
+      },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+          h('span', {
+            style: {
+              width: 18, height: 18, borderRadius: 9, flexShrink: 0, display: 'inline-flex',
+              alignItems: 'center', justifyContent: 'center', fontSize: 11, color: '#fff',
+              background: node.status === 'mastered' ? TOKEN.success
+                : node.status === 'active' ? TOKEN.brand
+                : node.status === 'needs-relearn' ? TOKEN.warn : TOKEN.surface2,
+              border: `1px solid ${color}`,
+            },
+          }, node.status === 'mastered' ? '✓' : node.status === 'needs-relearn' ? '!' : ''),
+          h('span', { style: { flex: 1, minWidth: 120, fontSize: 13, fontWeight: 500 } }, node.title),
+          node.total != null ? h('span', { style: { fontSize: 11, color: TOKEN.text2 } }, t('avgScore', { n: node.total })) : null,
+          h('span', { style: { display: 'inline-flex', gap: 6 } },
+            pill('note', t('nodeNote'), node.hasNote),
+            pill('map', t('nodeMap')),
+            pill('scratch', t('nodeScratch'), node.hasUserNote),
+          ),
+        ),
+        pane ? h(NodePane, { course, node, kind: pane, t, onSaved }) : null,
+      );
+    }
+
+    function CourseDetailView({ course, t, onBack, onAsk, reload }) {
+      const [tab, setTab] = useState('journey');
+      const done = course.nodeCount > 0 && course.masteredCount === course.nodeCount;
+      return h(React.Fragment, null,
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 4, flexWrap: 'wrap' } },
+          h('button', {
+            onClick: onBack,
+            style: {
+              cursor: 'pointer', fontSize: 12, padding: '4px 12px', borderRadius: 6,
+              border: `1px solid ${TOKEN.border}`, background: 'transparent', color: TOKEN.text2,
+            },
+          }, `← ${t('backToList')}`),
+          h('div', { style: { display: 'inline-flex', gap: 4, background: TOKEN.surface2, borderRadius: 999, padding: 3 } },
+            [['journey', t('journey')], ['review', t('reviewTab')]].map(([id, label]) => h('button', {
+              key: id, onClick: () => setTab(id),
+              style: {
+                cursor: 'pointer', fontSize: 12, padding: '4px 16px', borderRadius: 999, border: 'none',
+                background: tab === id ? TOKEN.surface : 'transparent',
+                color: tab === id ? TOKEN.text : TOKEN.text2, fontWeight: tab === id ? 600 : 400,
+                boxShadow: tab === id ? '0 1px 3px rgba(0,0,0,.12)' : 'none',
+              },
+            }, label)),
+          ),
+        ),
+        h('h2', { style: { fontSize: 17, fontWeight: 650, margin: '16px 0 2px' } }, course.meta.alias ?? course.topic),
+        h('div', { style: { fontSize: 12, color: TOKEN.text2 } },
+          t('masteredLine', { m: course.masteredCount, n: course.nodeCount }),
+          done ? ` · ${t('state_COMPLETED')} 🎉` : '',
+        ),
+        h(SegmentedProgress, { nodes: course.nodes }),
+        tab === 'journey'
+          ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, marginTop: 16 } },
+              course.nodes.map((n) => h(NodeRow, {
+                key: n.id, course, node: n, t, onSaved: reload,
+              })),
+            )
+          : h('div', { style: { marginTop: 16 } },
+              (() => {
+                const due = course.reviews.filter((r) => r.due);
+                const upcoming = course.reviews.filter((r) => !r.due).sort((a, b) => a.nextReviewAt - b.nextReviewAt);
+                return h(React.Fragment, null,
+                  due.length === 0
+                    ? h('div', {
+                        style: {
+                          padding: 20, borderRadius: 10, textAlign: 'center', color: TOKEN.text2,
+                          border: `1px dashed ${TOKEN.border}`, fontSize: 13,
+                        },
+                      }, course.reviews.length ? t('reviewAllEmpty') : t('reviewEmpty'))
+                    : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
+                        due.map((r) => h('div', {
+                          key: r.nodeId,
+                          style: {
+                            display: 'flex', alignItems: 'center', gap: 10,
+                            background: TOKEN.surface, border: `1px solid ${TOKEN.border}`,
+                            borderLeft: `3px solid ${TOKEN.warn}`, borderRadius: 10, padding: '10px 14px',
+                          },
+                        },
+                          h('span', { style: { flex: 1, fontSize: 13 } }, `📅 ${r.title}`),
+                          h('button', {
+                            onClick: () => onAsk(course),
+                            style: {
+                              cursor: 'pointer', fontSize: 12, padding: '3px 12px', borderRadius: 999,
+                              border: `1px solid ${TOKEN.brand}`, background: 'transparent', color: TOKEN.brand,
+                            },
+                          }, t('goReview')),
+                        )),
+                      ),
+                  upcoming.length ? h('div', { style: { marginTop: 14, fontSize: 12, color: TOKEN.text2 } },
+                    upcoming.slice(0, 5).map((r) => h('div', { key: r.nodeId, style: { marginTop: 4 } },
+                      `· ${r.title} — ${t('reviewNext', { d: fmtDate(r.nextReviewAt) })}`)),
+                  ) : null,
+                );
+              })(),
+            ),
+      );
+    }
+
+    /** 课堂 root: course list ↔ course detail. */
+    function CoursesPanel({ i18n, navCtx, onReload }) {
+      const t = useT(i18n);
+      const [data, setData] = useState(null);
+      const [error, setError] = useState(null);
+      const [openKey, setOpenKey] = useState(null);
+      const load = () => {
+        setError(null);
+        api('courses').then(setData, (e) => setError(String(e?.message ?? e)));
+      };
+      useEffect(() => {
+        load();
+        const iv = setInterval(load, 60000);
+        const onVis = () => { if (document.visibilityState === 'visible') load(); };
+        document.addEventListener('visibilitychange', onVis);
+        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+      }, []);
+      const courses = data?.courses ?? [];
+      const openCourse = courses.find((c) => c.key === openKey) ?? null;
+
+      const mutate = (course, patch) => {
+        let body = patch;
+        if (patch === 'rename') {
+          const alias = window.prompt(t('renamePrompt'), course.meta.alias ?? course.topic);
+          if (alias === null) return;
+          body = { alias: alias.trim() || null };
+        } else if (patch === 'group') {
+          const group = window.prompt(t('groupPrompt'), course.meta.group ?? '');
+          if (group === null) return;
+          body = { group: group.trim() || null };
+        } else {
+          body = patch;
+        }
+        api('course/meta', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ root: course.root, learnerId: course.learnerId, roadmapId: course.roadmapId, patch: body }),
+        }).then(() => { load(); onReload?.(); }).catch(() => {});
+      };
+      const remove = (course) => {
+        if (!window.confirm(t('deleteConfirm', { t: course.meta.alias ?? course.topic }))) return;
+        api('course/delete', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ root: course.root, learnerId: course.learnerId, roadmapId: course.roadmapId }),
+        }).then(() => { setOpenKey(null); load(); onReload?.(); }).catch(() => {});
+      };
+      const ask = (course) => {
+        const sid = course.meta.sessionId;
+        let jumped = false;
+        if (sid) {
+          try {
+            const uiWorkspace = navCtx?.get?.('uiWorkspace');
+            if (uiWorkspace?.openSession) { uiWorkspace.openSession(sid); jumped = true; }
+          } catch { /* session may be gone */ }
+        }
+        if (!jumped) {
+          try { navCtx?.get?.('layout')?.selectPanel?.(null); } catch { /* optional */ }
+        }
+      };
+
+      if (error) return h('div', { style: { marginTop: 20, color: TOKEN.error } }, `${t('loadFailed')}: ${error}`);
+      if (!data) return h('div', { style: { marginTop: 20, color: TOKEN.text2 } }, t('loading'));
+      return openCourse
+        ? h(CourseDetailView, { course: openCourse, t, onBack: () => setOpenKey(null), onAsk: ask, reload: load })
+        : h(CourseListView, { courses, t, onOpen: (c) => setOpenKey(c.key), onMutate: mutate, onDelete: remove, onAsk: ask });
+    }
+
+    /** Plugin main panel: 课堂 + 分析 tabs. */
+    function LearnPanel({ i18n, navCtx }) {
+      const t = useT(i18n);
+      const [tab, setTab] = useState('courses');
+      const [analysisTick, setAnalysisTick] = useState(0);
+      return h('div', {
+        style: {
+          height: '100%', overflowY: 'auto', boxSizing: 'border-box',
+          padding: '24px 28px 40px', color: TOKEN.text,
+          fontFamily: 'inherit', fontSize: 13,
+        },
+      },
+        h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 } },
+          h('h1', { style: { fontSize: 18, fontWeight: 650, margin: 0 } }, t('panelTitle')),
+          h('div', { style: { display: 'inline-flex', gap: 4, background: TOKEN.surface2, borderRadius: 999, padding: 3 } },
+            [['courses', t('tabCourses')], ['analysis', t('tabAnalysis')]].map(([id, label]) => h('button', {
+              key: id, onClick: () => setTab(id),
+              style: {
+                cursor: 'pointer', fontSize: 12, padding: '4px 18px', borderRadius: 999, border: 'none',
+                background: tab === id ? TOKEN.surface : 'transparent',
+                color: tab === id ? TOKEN.text : TOKEN.text2, fontWeight: tab === id ? 600 : 400,
+                boxShadow: tab === id ? '0 1px 3px rgba(0,0,0,.12)' : 'none',
+              },
+            }, label)),
+          ),
+        ),
+        tab === 'courses'
+          ? h(CoursesPanel, { i18n, navCtx, onReload: () => setAnalysisTick((n) => n + 1) })
+          : h(AnalysisPanel, { i18n, key: analysisTick, embedded: true }),
+      );
+    }
+
     // ---- main analysis panel ------------------------------------------------------
-    function AnalysisPanel({ i18n }) {
+    function AnalysisPanel({ i18n, embedded }) {
       const t = useT(i18n);
       const [data, setData] = useState(null);
       const [error, setError] = useState(null);
@@ -496,14 +1025,15 @@ window.__ModuleLoader__.load({
       const dagPlan = selected ? plans[0] : allPlans[0];
 
       return h('div', {
-        style: {
+        style: embedded ? {} : {
           height: '100%', overflowY: 'auto', boxSizing: 'border-box',
           padding: '24px 28px 40px', color: TOKEN.text,
           fontFamily: 'inherit', fontSize: 13,
         },
       },
         h('div', { style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 } },
-          h('h1', { style: { fontSize: 18, fontWeight: 650, margin: 0 } }, t('title')),
+          embedded ? h('div', { style: { fontSize: 12, color: TOKEN.text2 } }, t('subtitle'))
+            : h('h1', { style: { fontSize: 18, fontWeight: 650, margin: 0 } }, t('title')),
           h('div', { style: { display: 'flex', gap: 8 } },
             h('button', {
               onClick: doExport, disabled: exporting || !learners.length,
@@ -522,7 +1052,7 @@ window.__ModuleLoader__.load({
             }, t('refresh')),
           ),
         ),
-        h('div', { style: { fontSize: 12, color: TOKEN.text2, marginTop: 4 } }, t('subtitle')),
+        embedded ? null : h('div', { style: { fontSize: 12, color: TOKEN.text2, marginTop: 4 } }, t('subtitle')),
 
         learners.length > 1 ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 } },
           h(Chip, { active: !learner, onClick: () => setLearner(null) }, t('allLearners')),
@@ -822,7 +1352,7 @@ window.__ModuleLoader__.load({
 
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main', key: 'dsh-learn-expert',
-        }, () => h(AnalysisPanel, { i18n })));
+        }, () => h(LearnPanel, { i18n, navCtx: ctx })));
 
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: 'dsh-learn-expert',
