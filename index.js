@@ -189,8 +189,9 @@ export function apply(ctx, config = {}) {
     const disposers = tools.map((tool) => ctx.tools.register(withSessionBinding(tool)));
 
     // ---- Web API for the analysis panel / profile card (F3, F4, F5, F9) ----
-    const webServer = ctx.get('webServer');
-    if (webServer) {
+    // The webServer service can be installed AFTER this plugin is applied on a
+    // cold start; mount lazily and retry instead of silently dropping the routes.
+    const mountWebApi = (webServer) => {
       disposers.push(
         webServer.register({
           kind: 'prefix',
@@ -384,6 +385,27 @@ export function apply(ctx, config = {}) {
           },
         }),
       );
+    };
+
+    let webMounted = false;
+    let webTries = 0;
+    const tryMountWeb = () => {
+      if (webMounted) return;
+      let ws = null;
+      try { ws = ctx.get('webServer'); } catch { /* service not ready yet */ }
+      if (!ws) return;
+      try {
+        mountWebApi(ws);
+        webMounted = true;
+      } catch { /* keep retrying */ }
+    };
+    tryMountWeb();
+    if (!webMounted) {
+      const webRetry = setInterval(() => {
+        tryMountWeb();
+        if (webMounted || ++webTries > 120) clearInterval(webRetry);
+      }, 500);
+      disposers.push(() => clearInterval(webRetry));
     }
 
     // ---- F2: spaced-review reminder ----
