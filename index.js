@@ -7,6 +7,7 @@ import { buildAnalysis } from './src/analysis.js';
 import { layoutDag } from './src/core/dag-layout.js';
 import { readJson, writeJson } from './src/store/json-file.js';
 import { LearnerRegistry } from './src/store/learner-registry.js';
+import { assertSafeId, isLearnRoot, normalizeRoot, safeJoin } from './src/store/paths.js';
 import { ProfileStore } from './src/store/profile-store.js';
 import { ReviewQueue } from './src/store/review-queue.js';
 import { createLearnTools } from './src/tools/learn-tools.js';
@@ -18,6 +19,7 @@ export const inject = ['tools'];
 
 const REMINDER_INTERVAL_MS = 15 * 60 * 1000;
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const MAX_BODY_BYTES = 1024 * 1024;
 
 function sendJson(res, status, payload, headers = {}) {
   const body = JSON.stringify(payload);
@@ -29,13 +31,86 @@ function sendJson(res, status, payload, headers = {}) {
   res.end(body);
 }
 
-function readBody(req) {
+/**
+ * Read a JSON request body with a hard size cap.
+ *
+ * Root cause of the "local API can be used as a memory pump" finding: the body
+ * was buffered with no limit, so one request could hold hundreds of megabytes.
+ */
+function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        const error = new Error(`request body exceeds ${limit} bytes`);
+        error.status = 413;
+        reject(error);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+/**
+ * Parse a JSON request body, tolerating a UTF-8 BOM.
+ *
+ * Root cause of the "profile save returns 500" report: a body written by a
+ * Windows tool (PowerShell `Set-Content -Encoding utf8`) starts with a BOM,
+ * which JSON.parse rejects — a client mistake that surfaced as a server error.
+ * Stripping the BOM and answering 400 keeps the failure legible.
+ */
+async function readJsonBody(req) {
+  const text = (await readBody(req)).replace(/^\uFEFF/, '').trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const bad = new Error(`request body is not valid JSON: ${error.message}`);
+    bad.status = 400;
+    throw bad;
+  }
+}
+
+/**
+ * Reject cross-site writes.
+ *
+ * Root cause of "any web page can write learning data": the plugin routes are
+ * served by DSH's local web server, which does not authenticate prefixed
+ * handlers, and nothing checked where the request came from. A browser on any
+ * site can therefore POST to 127.0.0.1. Browsers always attach `Origin` to a
+ * cross-origin POST, so a present-and-foreign Origin (or a cross-site
+ * `sec-fetch-site`) is refused; non-browser clients without those headers are
+ * still allowed so the CLI export/import scripts keep working.
+ */
+function isCrossSiteRequest(req) {
+  const site = (req.headers['sec-fetch-site'] ?? '').toString().toLowerCase();
+  if (site === 'cross-site' || site === 'same-site') return true;
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  const host = req.headers.host;
+  if (!host) return true;
+  try {
+    return new URL(origin).host !== host;
+  } catch {
+    return true;
+  }
+}
+
+/** Reject a URL/query identifier that is not a safe slug (400 response). */
+function requireId(res, value, label) {
+  try {
+    assertSafeId(value, label);
+    return value;
+  } catch (error) {
+    sendJson(res, 400, { error: String(error?.message ?? error) });
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -45,7 +120,7 @@ function readBody(req) {
 // across workspace roots.
 // ---------------------------------------------------------------------------
 function courseKey(root, learnerId, roadmapId) {
-  return `${root}::${learnerId}::${roadmapId}`;
+  return `${normalizeRoot(root)}::${learnerId}::${roadmapId}`;
 }
 
 function makeCourseMetaStore(path) {
@@ -75,8 +150,8 @@ function makeCourseMetaStore(path) {
 }
 
 /** True when `dir` looks like a learn data root this plugin manages. */
-function isLearnRoot(dir) {
-  return typeof dir === 'string' && /(^|[\\/])dsh-learn$/.test(dir);
+function readRootOrNull(value) {
+  return isLearnRoot(value) ? normalizeRoot(value) : null;
 }
 
 /**
@@ -104,7 +179,14 @@ export function apply(ctx, config = {}) {
 
   const registry = new LearnerRegistry({
     fallbackRoot,
-    workingDirectory: ctx.get('workingDirectory') ?? null,
+    // Resolved per tool call: on a cold start `ctx.get('workingDirectory')` is
+    // still null while apply() runs, and capturing it here froze every later
+    // call onto the fallback root.
+    resolveWorkingDirectory: (agent, signal) => {
+      const service = ctx.get('workingDirectory');
+      if (!service || typeof service.ensure !== 'function') return null;
+      return service.ensure(agent, signal);
+    },
     masteryThreshold,
     masteryWeights: config.masteryWeights,
   });
@@ -149,7 +231,8 @@ export function apply(ctx, config = {}) {
   /** Due review items across every known root. */
   async function dueReviewCount() {
     const { reviewItems } = await registry.aggregate(null);
-    return reviewItems.filter((item) => item.nextReviewAt <= Date.now()).length;
+    const now = Date.now();
+    return reviewItems.filter((item) => Number(item.nextReviewAt) <= now).length;
   }
 
   /**
@@ -198,6 +281,17 @@ export function apply(ctx, config = {}) {
           path: '/dsh-learn-expert/api', // NOTE: no trailing slash; prefix p matches p and p/<anything>
           async handler(req, res) {
             try {
+              if (isCrossSiteRequest(req)) {
+                sendJson(res, 403, { error: 'cross-site requests are not allowed on this endpoint' });
+                return;
+              }
+              if (req.method === 'POST') {
+                const type = (req.headers['content-type'] ?? '').toString().toLowerCase();
+                if (!type.includes('application/json')) {
+                  sendJson(res, 415, { error: 'POST bodies must be sent as application/json' });
+                  return;
+                }
+              }
               const url = new URL(req.url, 'http://localhost');
               const sub = url.pathname.slice('/dsh-learn-expert/api/'.length);
 
@@ -208,7 +302,8 @@ export function apply(ctx, config = {}) {
               }
 
               if (sub === 'profile' && req.method === 'GET') {
-                const learnerId = url.searchParams.get('learnerId') || 'default';
+                const learnerId = requireId(res, url.searchParams.get('learnerId') || 'default', 'learnerId');
+                if (!learnerId) return;
                 const found = await registry.findLearnerDir(null, learnerId);
                 const dir = found?.dir ?? registry.learnerDir(fallbackRoot, learnerId);
                 const profile = await new ProfileStore(dir).get();
@@ -217,11 +312,19 @@ export function apply(ctx, config = {}) {
               }
 
               if (sub === 'profile' && req.method === 'POST') {
-                // GUI writes always land in the fallback (global) store.
-                const body = JSON.parse((await readBody(req)) || '{}');
-                const learnerId = typeof body.learnerId === 'string' && body.learnerId ? body.learnerId : 'default';
+                // Write to the same folder GET reads from: writing to the
+                // fallback root unconditionally made GUI edits silently vanish
+                // as soon as the learner folder lived under the workspace.
+                const body = await readJsonBody(req);
+                const learnerId = requireId(
+                  res,
+                  typeof body.learnerId === 'string' && body.learnerId ? body.learnerId : 'default',
+                  'learnerId',
+                );
+                if (!learnerId) return;
                 const { learnerId: _omit, ...patch } = body;
-                const dir = registry.learnerDir(fallbackRoot, learnerId);
+                const found = await registry.findLearnerDir(null, learnerId);
+                const dir = found?.dir ?? registry.learnerDir(fallbackRoot, learnerId);
                 const profile = await new ProfileStore(dir).update(patch);
                 registry.cache.delete(dir); // keep cached stores consistent
                 sendJson(res, 200, { ...profile, learnerId });
@@ -229,7 +332,8 @@ export function apply(ctx, config = {}) {
               }
 
               if (sub === 'export' && req.method === 'GET') {
-                const learnerId = url.searchParams.get('learnerId') || 'default';
+                const learnerId = requireId(res, url.searchParams.get('learnerId') || 'default', 'learnerId');
+                if (!learnerId) return;
                 const found = await registry.findLearnerDir(null, learnerId);
                 if (!found) {
                   sendJson(res, 404, { error: `learner "${learnerId}" has no data to export yet` });
@@ -250,13 +354,13 @@ export function apply(ctx, config = {}) {
                 for (const r of roadmaps) {
                   const key = courseKey(r.root, r.learnerId, r.id);
                   const m = meta[key] ?? {};
-                  const notesDir = join(r.root, `learn-${r.learnerId}`, 'notes', r.id);
+                  const notesDir = safeJoin(r.root, `learn-${r.learnerId}`, 'notes', r.id);
                   const nodes = [];
                   for (const n of r.nodes ?? []) {
                     let hasNote = false;
                     let hasUserNote = false;
-                    try { hasNote = (await stat(join(notesDir, `${n.id}.md`))).size > 0; } catch { /* none */ }
-                    try { hasUserNote = (await stat(join(notesDir, `${n.id}.user.md`))).size > 0; } catch { /* none */ }
+                    try { hasNote = (await stat(safeJoin(notesDir, `${n.id}.md`))).size > 0; } catch { /* none */ }
+                    try { hasUserNote = (await stat(safeJoin(notesDir, `${n.id}.user.md`))).size > 0; } catch { /* none */ }
                     nodes.push({
                       id: n.id,
                       title: n.title,
@@ -276,11 +380,15 @@ export function apply(ctx, config = {}) {
                       nodeId: i.nodeId,
                       roadmapId: i.roadmapId,
                       nextReviewAt: i.nextReviewAt,
-                      due: i.nextReviewAt <= now,
+                      due: Number(i.nextReviewAt) <= now,
                       title: (r.nodes ?? []).find((n) => n.id === i.nodeId)?.title ?? i.nodeId,
                     }));
                   const nodeCount = nodes.length;
                   const masteredCount = nodes.filter((n) => n.status === 'mastered').length;
+                  // `activeNode` used to be a bare title string while the panel
+                  // treated it as a node object; expose the whole node plus a
+                  // `activeNodeTitle` convenience field.
+                  const activeNode = nodes.find((n) => n.status === 'active') ?? null;
                   courses.push({
                     key,
                     root: r.root,
@@ -294,7 +402,8 @@ export function apply(ctx, config = {}) {
                     nodeCount,
                     masteredCount,
                     relearnCount: nodes.filter((n) => n.status === 'needs-relearn').length,
-                    activeNode: nodes.find((n) => n.status === 'active')?.title ?? null,
+                    activeNode,
+                    activeNodeTitle: activeNode?.title ?? null,
                     dueCount: reviews.filter((i) => i.due).length,
                     reviews,
                     nodes,
@@ -313,17 +422,25 @@ export function apply(ctx, config = {}) {
               }
 
               if (sub === 'course/meta' && req.method === 'POST') {
-                const body = JSON.parse((await readBody(req)) || '{}');
+                const body = await readJsonBody(req);
                 const { root, learnerId, roadmapId, patch } = body;
-                if (!isLearnRoot(root) || !learnerId || !roadmapId || typeof patch !== 'object' || !patch) {
+                const safeRoot = readRootOrNull(root);
+                if (!safeRoot || typeof patch !== 'object' || !patch) {
                   sendJson(res, 400, { error: 'course/meta requires { root, learnerId, roadmapId, patch }' });
+                  return;
+                }
+                try {
+                  assertSafeId(learnerId, 'learnerId');
+                  assertSafeId(roadmapId, 'roadmapId');
+                } catch (error) {
+                  sendJson(res, 400, { error: String(error?.message ?? error) });
                   return;
                 }
                 const allowed = {};
                 for (const k of ['alias', 'favorite', 'locked', 'group']) {
                   if (k in patch) allowed[k] = patch[k];
                 }
-                const meta = await courseMeta.patch(root, learnerId, roadmapId, allowed);
+                const meta = await courseMeta.patch(safeRoot, learnerId, roadmapId, allowed);
                 sendJson(res, 200, { ok: true, meta });
                 return;
               }
@@ -334,11 +451,29 @@ export function apply(ctx, config = {}) {
                 const roadmapId = url.searchParams.get('roadmapId');
                 const nodeId = url.searchParams.get('nodeId');
                 const kind = url.searchParams.get('kind') === 'user' ? 'user' : 'tutor';
-                if (!isLearnRoot(root) || !learnerId || !roadmapId || !nodeId) {
+                const safeRoot = readRootOrNull(root);
+                if (!safeRoot || !learnerId || !roadmapId || !nodeId) {
                   sendJson(res, 400, { error: 'course/note requires root, learnerId, roadmapId, nodeId' });
                   return;
                 }
-                const file = join(root, `learn-${learnerId}`, 'notes', roadmapId, `${nodeId}${kind === 'user' ? '.user' : ''}.md`);
+                // NOTE: `roadmapId`/`nodeId` come straight from the URL and end
+                // up in a file path; validate them before joining.
+                let file;
+                try {
+                  assertSafeId(learnerId, 'learnerId');
+                  assertSafeId(roadmapId, 'roadmapId');
+                  assertSafeId(nodeId, 'nodeId');
+                  file = safeJoin(
+                    safeRoot,
+                    `learn-${learnerId}`,
+                    'notes',
+                    roadmapId,
+                    `${nodeId}${kind === 'user' ? '.user' : ''}.md`,
+                  );
+                } catch (error) {
+                  sendJson(res, 400, { error: String(error?.message ?? error) });
+                  return;
+                }
                 let content = '';
                 try { content = await readFile(file, 'utf8'); } catch { /* no note yet */ }
                 sendJson(res, 200, { content, kind });
@@ -346,33 +481,59 @@ export function apply(ctx, config = {}) {
               }
 
               if (sub === 'course/note' && req.method === 'POST') {
-                const body = JSON.parse((await readBody(req)) || '{}');
+                const body = await readJsonBody(req);
                 const { root, learnerId, roadmapId, nodeId, content } = body;
-                if (!isLearnRoot(root) || !learnerId || !roadmapId || !nodeId || typeof content !== 'string') {
+                const safeRoot = readRootOrNull(root);
+                if (!safeRoot || !learnerId || !roadmapId || !nodeId || typeof content !== 'string') {
                   sendJson(res, 400, { error: 'course/note POST requires { root, learnerId, roadmapId, nodeId, content }' });
                   return;
                 }
-                const dir = join(root, `learn-${learnerId}`, 'notes', roadmapId);
+                let dir;
+                let file;
+                try {
+                  assertSafeId(learnerId, 'learnerId');
+                  assertSafeId(roadmapId, 'roadmapId');
+                  assertSafeId(nodeId, 'nodeId');
+                  dir = safeJoin(safeRoot, `learn-${learnerId}`, 'notes', roadmapId);
+                  file = safeJoin(dir, `${nodeId}.user.md`);
+                } catch (error) {
+                  sendJson(res, 400, { error: String(error?.message ?? error) });
+                  return;
+                }
                 await mkdir(dir, { recursive: true });
-                await writeFile(join(dir, `${nodeId}.user.md`), content, 'utf8');
+                await writeFile(file, content, 'utf8');
                 sendJson(res, 200, { ok: true });
                 return;
               }
 
               if (sub === 'course/delete' && req.method === 'POST') {
-                const body = JSON.parse((await readBody(req)) || '{}');
+                const body = await readJsonBody(req);
                 const { root, learnerId, roadmapId } = body;
-                if (!isLearnRoot(root) || !learnerId || !roadmapId) {
+                const safeRoot = readRootOrNull(root);
+                if (!safeRoot || !learnerId || !roadmapId) {
                   sendJson(res, 400, { error: 'course/delete requires { root, learnerId, roadmapId }' });
                   return;
                 }
-                const dir = join(root, `learn-${learnerId}`);
-                await rm(join(dir, 'roadmaps', `${roadmapId}.json`), { force: true });
-                await rm(join(dir, 'notes', roadmapId), { recursive: true, force: true });
+                // Root cause of the traversal finding: only the root was
+                // checked, so roadmapId "../.." made the recursive rm below
+                // delete an arbitrary directory.
+                let dir;
+                let notesDir;
+                try {
+                  assertSafeId(learnerId, 'learnerId');
+                  assertSafeId(roadmapId, 'roadmapId');
+                  dir = safeJoin(safeRoot, `learn-${learnerId}`);
+                  notesDir = safeJoin(dir, 'notes', roadmapId);
+                } catch (error) {
+                  sendJson(res, 400, { error: String(error?.message ?? error) });
+                  return;
+                }
+                await rm(safeJoin(dir, 'roadmaps', `${roadmapId}.json`), { force: true });
+                await rm(notesDir, { recursive: true, force: true });
                 const queue = new ReviewQueue(dir);
                 const items = await queue.list();
                 await queue.saveAll(items.filter((i) => i.roadmapId !== roadmapId));
-                await courseMeta.remove(root, learnerId, roadmapId);
+                await courseMeta.remove(safeRoot, learnerId, roadmapId);
                 registry.cache.delete(dir);
                 sendJson(res, 200, { ok: true });
                 return;
@@ -380,7 +541,7 @@ export function apply(ctx, config = {}) {
 
               sendJson(res, 404, { error: `unknown learn-expert endpoint: ${sub}` });
             } catch (error) {
-              sendJson(res, 500, { error: String(error?.message ?? error) });
+              sendJson(res, Number(error?.status) || 500, { error: String(error?.message ?? error) });
             }
           },
         }),
