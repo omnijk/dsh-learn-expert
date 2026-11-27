@@ -253,6 +253,22 @@ window.__ModuleLoader__.load({
       return i18n.t;
     }
 
+    /**
+     * Load once, then refresh on a timer and whenever the tab becomes visible
+     * again. Extracted because the same 60s poller was copy-pasted into three
+     * panels, so a fix to one (e.g. stopping after unmount) never reached the
+     * others.
+     */
+    function useLoadPoll(load, intervalMs = 60000) {
+      useEffect(() => {
+        load();
+        const iv = setInterval(load, intervalMs);
+        const onVis = () => { if (document.visibilityState === 'visible') load(); };
+        document.addEventListener('visibilitychange', onVis);
+        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+      }, []);
+    }
+
     // ---- data -------------------------------------------------------------
     function api(path, options) {
       // NOTE: never append window.location.search here — that string belongs to
@@ -1039,13 +1055,7 @@ window.__ModuleLoader__.load({
         setError(null);
         api('courses').then(setData, (e) => setError(String(e?.message ?? e)));
       };
-      useEffect(() => {
-        load();
-        const iv = setInterval(load, 60000);
-        const onVis = () => { if (document.visibilityState === 'visible') load(); };
-        document.addEventListener('visibilitychange', onVis);
-        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
-      }, []);
+      useLoadPoll(load);
       const courses = data?.courses ?? [];
       const openCourse = courses.find((c) => c.key === openKey) ?? null;
 
@@ -1279,13 +1289,7 @@ window.__ModuleLoader__.load({
         setError(null);
         api('courses').then(setData, (e) => setError(String(e?.message ?? e)));
       };
-      useEffect(() => {
-        load();
-        const iv = setInterval(load, 60000);
-        const onVis = () => { if (document.visibilityState === 'visible') load(); };
-        document.addEventListener('visibilitychange', onVis);
-        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
-      }, []);
+      useLoadPoll(load);
       const courses = data?.courses ?? [];
       const dueItems = [];
       const upcoming = [];
@@ -1397,13 +1401,7 @@ window.__ModuleLoader__.load({
         api('analysis').then((payload) => setData(payload), (e) => setError(String(e?.message ?? e)));
       };
       // F6: poll every 60s + refresh when the page becomes visible again.
-      useEffect(() => {
-        load();
-        const iv = setInterval(load, 60000);
-        const onVis = () => { if (document.visibilityState === 'visible') load(); };
-        document.addEventListener('visibilitychange', onVis);
-        return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
-      }, []);
+      useLoadPoll(load);
 
       const allPlans = useMemo(
         () => (data?.plans ?? []).filter((p) => !learner || (p.learnerId ?? 'default') === learner),

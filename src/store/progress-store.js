@@ -13,14 +13,10 @@ import { transition } from '../core/state-machine.js';
 import { readJson, writeJson } from './json-file.js';
 import { withLock } from './lock.js';
 import { assertSafeId } from './paths.js';
+import { slug } from './slug.js';
 
 function slugify(text) {
-  const slug = String(text)
-    .toLowerCase()
-    .replace(/[^a-z0-9一-鿿]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return slug || 'course';
+  return slug(text, 'course');
 }
 
 /**

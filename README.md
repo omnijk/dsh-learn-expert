@@ -71,6 +71,8 @@ plugin_manager install_bundle → target: <本仓库目录绝对路径>
 | 导图白屏（`plan.topic` 缺失）、`activeNode` 字符串/对象混用、hooks 顺序崩溃 | 传完整 `course`、后端同时给 `activeNode` 对象与 `activeNodeTitle`、hooks 前置；新增 ErrorBoundary 兜住渲染异常 |
 | 画像「擅长」输入被逗号吞掉、切学习者串数据、导出下载被取消 | 独立文本态 + `alive` 守卫 + 导出挂 DOM 后再 revoke |
 | 热力图跨时区错列、星期标签写死中文 | 后端给 `date`/`weekday`，前端 i18n 标签 |
+| 已掌握节点可被一次误评分静默降级；两次答错后课程永远卡在 `REMEDIATING` | `applyMastery` 拒绝重评已掌握节点（改走复习失败标记）；答对即把 `REMEDIATING` 拉回 `TEACHING` |
+| 同一 slug 规则写了两份（学习者 id / 课程 id），改动易走样；60s 轮询在三个面板各抄一遍 | 新增 `src/store/slug.js` 统一规则；前端抽出 `useLoadPoll` |
 
 ## 结构
 

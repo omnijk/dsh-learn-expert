@@ -5,6 +5,7 @@ import { canonicalRoot, normalizeRoot } from './paths.js';
 import { ProfileStore } from './profile-store.js';
 import { ProgressStore } from './progress-store.js';
 import { ReviewQueue } from './review-queue.js';
+import { slug } from './slug.js';
 
 export const BUNDLE_FORMAT = 'dsh-learn/bundle';
 export const BUNDLE_VERSION = 1;
@@ -13,13 +14,7 @@ const LEGACY_ENTRIES = ['profile.json', 'review-queue.json', 'roadmaps', 'diagno
 
 /** Normalize a learner id into a folder-safe slug ("learn-<slug>"). */
 export function slugLearnerId(raw) {
-  const slug = String(raw ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9一-鿿]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-  return slug || 'default';
+  return slug(raw ?? '', 'default');
 }
 
 function timestamp(date = new Date()) {
